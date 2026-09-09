@@ -216,3 +216,15 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# --- CYP challenge project ---
+# data/raw/YYYYMMDD/ snapshots are committed deliberately: the challenge dataset has
+# been amended mid-competition, and keeping dated snapshots in git makes those
+# changes visible and lets old results be reproduced against the data they used.
+data/processed/
+data/interim/
+experiments/**/checkpoints/
+experiments/**/*.pkl
+experiments/**/*.joblib
+*.sqlite
+.ipynb_checkpoints/
