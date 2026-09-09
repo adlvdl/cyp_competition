@@ -228,3 +228,4 @@ experiments/**/*.pkl
 experiments/**/*.joblib
 *.sqlite
 .ipynb_checkpoints/
+.DS_Store
