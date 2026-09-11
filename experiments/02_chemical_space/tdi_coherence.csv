@@ -1,0 +1,3 @@
+isoform,n_labelled,positive_rate_pct,nn_label_agreement,chance_agreement,lift
+CYP3A4,3584,21.3,0.724,0.665,0.059
+CYP2D6,1497,21.6,0.681,0.661,0.02

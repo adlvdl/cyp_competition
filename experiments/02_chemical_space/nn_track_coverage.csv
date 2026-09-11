@@ -1,0 +1,7 @@
+track,nn_measured,nn_measured_pct,detail
+CYP1A2,378,50.4,220 potent (>=6)
+CYP2C9,367,48.9,206 potent (>=6)
+CYP2D6,315,42.0,37 potent (>=6)
+CYP3A4,432,57.6,206 potent (>=6)
+CYP3A4 (TDI),434,57.9,227 TDI+ / 207 TDI-
+CYP2D6 (TDI),315,42.0,66 TDI+ / 249 TDI-
