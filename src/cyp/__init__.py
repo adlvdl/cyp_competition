@@ -10,23 +10,34 @@ from . import (
     constants,
     cv,
     data,
+    embedding,
     ensemble,
     evaluation,
     fingerprints,
     mcs,
     metrics,
+    mmp,
+    scaffolds,
+    similarity,
     submission,
 )
+
+# `interactive` is deliberately not imported here: it pulls in marimo and Altair,
+# which are notebook-only extras. Import it explicitly from a notebook.
 
 __all__ = [
     "calibration",
     "constants",
     "cv",
     "data",
+    "embedding",
     "ensemble",
     "evaluation",
     "fingerprints",
     "mcs",
     "metrics",
+    "mmp",
+    "scaffolds",
+    "similarity",
     "submission",
 ]
