@@ -42,6 +42,24 @@ notebook = [
     "mmpdb>=3.1",
     "networkx>=3.3",
 ]
+# Heavyweight model families explored in notebooks/03_methods.py. Kept out of the
+# core dependency set because torch alone is ~2.5GB and chemprop/CheMeleon download
+# pretrained weights on first use -- `import cyp` must stay usable without any of it,
+# which is why every module below imports these lazily inside the call, not at the
+# module top level (same pattern as `interactive`).
+deep = [
+    # Chemprop v2 D-MPNN, and the CheMeleon foundation backbone it warm-starts from.
+    "chemprop>=2.2",
+    "torch>=2.4",
+    # Macau / Bayesian matrix factorization with fingerprints as row side-information.
+    "smurff>=1.1",
+    # Tabular foundation models. Both are installed because they fail differently:
+    # TabPFN caps at 500 features (so ECFP4-2048 and CheMeleon-2048 need PCA first)
+    # and its weights are non-commercial; TabICL is Apache-2.0 and handles ~2000
+    # features natively with a quantile regression head. See 03_methods.py.
+    "tabpfn>=2.0",
+    "tabicl>=2.0",
+]
 dev = [
     "pytest>=8.2",
     "ruff>=0.6",
