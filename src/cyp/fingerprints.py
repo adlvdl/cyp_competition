@@ -41,20 +41,41 @@ def _resolve(name: str):
     return getattr(module, class_name)
 
 
+def _supported_kwargs(fp_class, kwargs: dict) -> dict:
+    """Drop kwargs the featurizer does not accept.
+
+    Several fingerprints are fixed-length by definition -- MACCS is 166 structural
+    keys, MQN is 42 counts, Mordred is a fixed descriptor list -- and their skfp
+    classes take no `fp_size`. A sweep that varies width across representations
+    would otherwise crash on those rather than simply leaving them at native size,
+    which is the sensible behaviour: asking MACCS for 2048 bits is not meaningful.
+    """
+    import inspect
+
+    accepted = inspect.signature(fp_class.__init__).parameters
+    return {k: v for k, v in kwargs.items() if k in accepted}
+
+
 def compute(smiles: Sequence[str], kind: str = "ecfp", **kwargs) -> np.ndarray:
     """Compute a fingerprint matrix for `smiles`.
 
     Conformer-requiring fingerprints get ETKDG conformers generated automatically.
 
+    Kwargs the chosen featurizer does not accept are dropped rather than raising,
+    so one loop can sweep `fp_size` across representations where some are
+    fixed-length (MACCS, MQN, Mordred, PubChem). Those keep their native width.
+
     Args:
         smiles: SMILES strings.
         kind: One of `AVAILABLE`.
-        **kwargs: Forwarded to the skfp class (e.g. `radius=3, n_bits=1024`).
+        **kwargs: Forwarded to the skfp class where supported (e.g. `radius=3,
+            fp_size=1024`).
 
     Returns:
         Array of shape (len(smiles), n_features).
     """
     fp_class = _resolve(kind)
+    kwargs = _supported_kwargs(fp_class, kwargs)
     featurizer = fp_class(**kwargs) if kwargs else fp_class()
 
     inputs: Sequence = smiles

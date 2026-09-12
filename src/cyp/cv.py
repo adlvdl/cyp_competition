@@ -134,3 +134,128 @@ def oof_frame(records: list[dict]) -> pl.DataFrame:
     if missing:
         raise ValueError(f"OOF frame missing columns: {sorted(missing)}")
     return frame
+
+
+def shared_scaffold_folds(
+    frames: dict[str, pl.DataFrame],
+    smiles_col: str = "SMILES",
+    key: str = "Molecule_Name",
+    n_outer: int = N_OUTER,
+    n_inner: int = N_INNER,
+    seed: int = SEED,
+) -> tuple[dict[str, int], pl.DataFrame]:
+    """Assign every compound in the union of `frames` to one scaffold-grouped fold.
+
+    Multitask training needs this and per-endpoint `scaffold_splits` cannot provide
+    it. 1,309 of the 4,905 labelled compounds carry more than one endpoint (measured
+    on the 20260908 snapshot), so if each endpoint drew its own split, a compound
+    could land in CYP3A4's training set and CYP2D6's test set at once -- and a
+    multitask model that saw its CYP3A4 label would be scored on a test row it had
+    already partly seen. Folds must therefore be a property of the *compound*, not of
+    the (compound, endpoint) pair.
+
+    The same assignment is also what makes single-task and multitask results
+    comparable: pass this to `fold_assignment_splits` for both arms and every method
+    is scored on identical test rows, so a paired test is legitimate.
+
+    Args:
+        frames: Endpoint name -> that endpoint's labelled frame. Only `key` and
+            `smiles_col` are read.
+        smiles_col: SMILES column, used for the Murcko scaffold.
+        key: Compound identifier, used to align rows across endpoints.
+        n_outer: Outer repeats.
+        n_inner: Folds per repeat.
+        seed: Split seed.
+
+    Returns:
+        `(fold_of, table)` -- a dict mapping compound name to fold index, and the
+        same thing as a frame with `Molecule_Name`, `scaffold` and `fold` columns for
+        inspection. Fold indices run `0 .. n_outer * n_inner - 1`, matching the
+        `fold` numbering `scaffold_splits` produces.
+    """
+    # One row per compound across every endpoint. A compound measured three times
+    # must get exactly one scaffold and one fold, so duplicates are collapsed here
+    # rather than after splitting.
+    union = (
+        pl.concat(
+            [f.select(key, smiles_col) for f in frames.values()], how="vertical_relaxed"
+        )
+        .unique(subset=[key])
+        .sort(key)
+    )
+
+    scaffolds = np.array([murcko_scaffold(s) for s in union[smiles_col].to_list()])
+    names = union[key].to_list()
+
+    # A compound is held out in exactly one fold per outer repeat, and that is the
+    # fold it is recorded under -- the same convention `_nested` uses, where `fold`
+    # names the test partition.
+    assignments: list[dict] = []
+    for i in range(n_outer):
+        for j, (_train_idx, test_idx) in enumerate(
+            _group_kfold_shuffle(scaffolds, n_inner, seed + i)
+        ):
+            fold = i * n_inner + j
+            for idx in test_idx:
+                assignments.append(
+                    {
+                        key: names[idx],
+                        "scaffold": scaffolds[idx],
+                        "fold": fold,
+                        "outer_fold": i,
+                        "inner_fold": j,
+                    }
+                )
+    table = pl.DataFrame(assignments)
+
+    # `fold_of` is the convenience view: the first outer repeat only, since a
+    # compound has a different fold in each repeat and a flat dict cannot express
+    # that. Use `table` for anything beyond a quick sanity check.
+    first_repeat = table.filter(pl.col("outer_fold") == 0)
+    fold_of = dict(
+        zip(
+            first_repeat[key].to_list(),
+            first_repeat["fold"].to_list(),
+            strict=True,
+        )
+    )
+    return fold_of, table
+
+
+def fold_assignment_splits(
+    df: pl.DataFrame,
+    assignments: pl.DataFrame,
+    key: str = "Molecule_Name",
+    p_val: float = 0.0,
+    seed: int = SEED,
+) -> Iterator[tuple[int, int, int, pl.DataFrame, pl.DataFrame | None, pl.DataFrame]]:
+    """Yield splits of `df` driven by a precomputed compound -> fold assignment.
+
+    The counterpart to `shared_scaffold_folds`: that function decides the folds once
+    over every compound, this one applies them to one endpoint's rows. Yields the
+    same `(fold, outer, inner, train, val, test)` tuple as `scaffold_splits`, so the
+    training loops in `models.py` consume it unchanged.
+
+    Args:
+        df: One endpoint's frame.
+        assignments: The `table` returned by `shared_scaffold_folds`.
+        key: Compound identifier column, present in both frames.
+        p_val: Fraction of each training fold held out for validation.
+        seed: Seed for that validation carve-out.
+    """
+    folds = assignments.select(key, "fold", "outer_fold", "inner_fold").unique()
+    joined = df.join(folds, on=key, how="inner")
+
+    for (fold,), group in sorted(
+        joined.group_by(["fold"]), key=lambda kv: kv[0][0]
+    ):
+        outer = int(group["outer_fold"][0])
+        inner = int(group["inner_fold"][0])
+        test = group.drop("fold", "outer_fold", "inner_fold")
+        train = joined.filter(pl.col("fold") != fold).drop(
+            "fold", "outer_fold", "inner_fold"
+        )
+        val = None
+        if p_val > 0:
+            train, val = split_random(train, p_test=p_val, seed=seed + fold)
+        yield int(fold), outer, inner, train, val, test
