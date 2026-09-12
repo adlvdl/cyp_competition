@@ -226,6 +226,19 @@ data/interim/
 experiments/**/checkpoints/
 experiments/**/*.pkl
 experiments/**/*.joblib
+# Pairwise-similarity caches (02_chemical_space) are ~170 MB: every unique compound
+# pair across four fingerprints. Unlike the OOF caches they are a pure function of
+# the data snapshot with no training involved, so regenerating them is a matter of
+# minutes and they are not worth versioning. The derived summaries -- the scorecard
+# CSVs and the figures -- are committed instead.
+experiments/**/cache/fp_similarity_*.parquet
+experiments/**/cache/similarity_train_test_*.parquet
+# mmpdb intermediates: the .frag file is large and fully reproducible from the .smi.
+experiments/**/cache/*.frag
+experiments/**/cache/*.frag-journal
+# QUICK-mode caches are iteration scratch on a subsampled compound set -- the
+# committed results always come from a full run.
+experiments/**/cache/*_quick.*
 *.sqlite
 .ipynb_checkpoints/
 .DS_Store

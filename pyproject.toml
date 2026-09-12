@@ -33,6 +33,14 @@ notebook = [
     "marimo>=0.9",
     "altair>=5.4",
     "mols2grid>=2.0",
+    # Chemical-space exploration (notebooks/02_chemical_space.py), carried over from
+    # the PXR 1a-1e notebooks: UMAP for the embeddings, matplotlib-venn for the
+    # activity-cliff overlap diagram, mmpdb for matched molecular pairs, networkx
+    # for the MMP network layout.
+    "umap-learn>=0.5",
+    "matplotlib-venn>=1.1",
+    "mmpdb>=3.1",
+    "networkx>=3.3",
 ]
 dev = [
     "pytest>=8.2",
@@ -52,6 +60,14 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
+# UP037 wants the quotes off `"plt.Axes | None"`, but matplotlib's Axes is only
+# imported for typing in those modules and the quoted form keeps it lazy.
+ignore = ["UP037"]
+
+[tool.ruff.lint.per-file-ignores]
+# A marimo cell displays its value by ending on a bare expression, which B018
+# reads as a useless statement. It is the notebook format, not a mistake.
+"notebooks/*.py" = ["B018"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
