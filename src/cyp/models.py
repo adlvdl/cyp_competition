@@ -28,7 +28,7 @@ from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.linear_model import Ridge
 
 from . import fingerprints
-from .cv import scaffold_splits
+from .cv import report_fold, scaffold_splits
 
 
 class MeanBaseline:
@@ -181,6 +181,7 @@ def run_cv(
     seed: int = 42,
     features: np.ndarray | None = None,
     p_val: float = 0.0,
+    on_fold=None,
 ) -> pl.DataFrame:
     """Run nested scaffold CV for `methods` on one endpoint.
 
@@ -203,6 +204,9 @@ def run_cv(
             need this for early stopping -- pass ~0.1 when `methods` includes
             chemprop or chemeleon, so their stopping set respects the scaffold
             grouping instead of being carved out at random inside the model.
+        on_fold: Optional `(fold, n_folds) -> None` progress callback, invoked after
+            each fold. A 5x5 run on a graph model is ~37 minutes per endpoint, which
+            looks identical to a hang without this. See `cv.FoldCallback`.
     """
     unknown = set(methods) - set(MODEL_FACTORIES)
     if unknown:
@@ -210,6 +214,7 @@ def run_cv(
 
     X_all = _featurize(frame, fingerprint, n_bits, features)
     indexed = frame.with_row_index("_row")
+    n_folds = n_outer * n_inner
 
     records: list[dict] = []
     for fold, outer, inner, train, val, test in scaffold_splits(
@@ -256,6 +261,10 @@ def run_cv(
                         else None,
                     }
                 )
+
+        # After every method has been fitted on this fold, so a tick means one
+        # complete fold rather than a partial one.
+        report_fold(on_fold, fold, n_folds)
     return pl.DataFrame(records)
 
 
@@ -438,6 +447,7 @@ def run_cv_classification(
     features: np.ndarray | None = None,
     p_val: float = 0.0,
     threshold: float = 0.5,
+    on_fold=None,
 ) -> pl.DataFrame:
     """Run nested scaffold CV for TDI classifiers on one isoform.
 
@@ -466,6 +476,7 @@ def run_cv_classification(
 
     X_all = _featurize(frame, fingerprint, n_bits, features)
     indexed = frame.with_row_index("_row")
+    n_folds = n_outer * n_inner
 
     records: list[dict] = []
     for fold, outer, inner, train, val, test in scaffold_splits(
@@ -506,6 +517,8 @@ def run_cv_classification(
                         "y_pred": bool(y_pred[i]),
                     }
                 )
+
+        report_fold(on_fold, fold, n_folds)
     return pl.DataFrame(records)
 
 

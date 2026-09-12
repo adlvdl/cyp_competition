@@ -51,7 +51,7 @@ import numpy as np
 import polars as pl
 
 from . import fingerprints
-from .cv import fold_assignment_splits, shared_scaffold_folds
+from .cv import fold_assignment_splits, report_fold, shared_scaffold_folds
 
 
 def endpoint_indicator_frame(
@@ -132,6 +132,7 @@ def run_cv_stacked(
     seed: int = 42,
     features: dict[str, np.ndarray] | None = None,
     assignments: pl.DataFrame | None = None,
+    on_fold=None,
 ) -> pl.DataFrame:
     """Multitask by row-stacking, for any model with a single scalar output.
 
@@ -154,6 +155,8 @@ def run_cv_stacked(
             that endpoint's frame (e.g. CheMeleon embeddings).
         assignments: Fold table from `shared_scaffold_folds`. Pass the *same* table
             used for the single-task arm so the comparison is paired.
+        on_fold: Optional `(fold, n_folds) -> None` progress callback; see
+            `cv.FoldCallback`.
 
     Returns:
         Long OOF frame, directly comparable to `models.run_cv` output.
@@ -193,6 +196,7 @@ def run_cv_stacked(
 
     X_all = stack_features(X_all, stacked["endpoint"].to_list(), endpoints)
     indexed = stacked.with_row_index("_row")
+    n_folds = assignments["fold"].n_unique()
 
     probe = MODEL_FACTORIES[method]()
     if _needs_smiles(probe):
@@ -207,6 +211,7 @@ def run_cv_stacked(
         model.fit(X_all[train["_row"].to_numpy()], train["y_true"].to_numpy())
         y_pred = np.asarray(model.predict(X_all[test["_row"].to_numpy()]), dtype=float)
         records.extend(_oof_records(test, y_pred, f"{method}_multitask", fold, outer, inner))
+        report_fold(on_fold, fold, n_folds)
 
     return pl.DataFrame(records)
 
@@ -220,6 +225,7 @@ def run_cv_native(
     n_inner: int = 5,
     seed: int = 42,
     assignments: pl.DataFrame | None = None,
+    on_fold=None,
     **macau_kwargs,
 ) -> pl.DataFrame:
     """Multitask by sparse matrix factorization -- Macau's native formulation.
@@ -246,6 +252,7 @@ def run_cv_native(
         seed: Split seed.
         assignments: Fold table from `shared_scaffold_folds`; pass the same one used
             for the single-task arm.
+        on_fold: Optional `(fold, n_folds) -> None` progress callback.
         **macau_kwargs: Forwarded to `MacauModel`.
 
     Returns:
@@ -296,6 +303,7 @@ def run_cv_native(
         pl.col("Molecule_Name").replace_strict(row_of, return_dtype=pl.Int64).alias("_row")
     )
     column_of = {e: i for i, e in enumerate(endpoints)}
+    n_folds = assignments["fold"].n_unique()
 
     records: list[dict] = []
     for fold, outer, inner, train, _val, test in fold_assignment_splits(stacked, assignments):
@@ -322,6 +330,7 @@ def run_cv_native(
             [per_column[column_of[e]][i] for i, e in enumerate(test["endpoint"].to_list())]
         )
         records.extend(_oof_records(test, y_pred, "macau_multitask", fold, outer, inner))
+        report_fold(on_fold, fold, n_folds)
 
     return pl.DataFrame(records)
 
@@ -334,6 +343,7 @@ def run_cv_multitarget(
     seed: int = 42,
     p_val: float = 0.1,
     assignments: pl.DataFrame | None = None,
+    on_fold=None,
     **chemprop_kwargs,
 ) -> pl.DataFrame:
     """Multitask by multi-target regression -- one Chemprop D-MPNN, four outputs.
@@ -353,6 +363,9 @@ def run_cv_multitarget(
         seed: Split seed.
         p_val: Validation fraction per training fold, for early stopping.
         assignments: Fold table from `shared_scaffold_folds`.
+        on_fold: Optional `(fold, n_folds) -> None` progress callback. Chemprop is
+            the slowest method here (~90s per fold at 50 epochs), so this is the
+            harness that most needs one.
         **chemprop_kwargs: Forwarded to `ChempropMultitargetModel`.
 
     Returns:
@@ -382,6 +395,7 @@ def run_cv_multitarget(
     # The long table drives scoring: a prediction is only scored where a label
     # exists, so the wide frame's nulls never reach the metric.
     stacked, _ = endpoint_indicator_frame(frames)
+    n_folds = assignments["fold"].n_unique()
 
     records: list[dict] = []
     for fold, outer, inner, train_long, _val, test_long in fold_assignment_splits(
@@ -429,6 +443,7 @@ def run_cv_multitarget(
             ]
         )
         records.extend(_oof_records(test_long, y_pred, name, fold, outer, inner))
+        report_fold(on_fold, fold, n_folds)
 
     return pl.DataFrame(records)
 
@@ -460,6 +475,7 @@ def run_cv_multitask(
     n_inner: int = 5,
     seed: int = 42,
     assignments: pl.DataFrame | None = None,
+    on_fold=None,
     **kwargs,
 ) -> pl.DataFrame:
     """Run the multitask arm for `method`, dispatching on its strategy.
@@ -480,6 +496,8 @@ def run_cv_multitask(
         n_inner: Folds per repeat.
         seed: Split seed.
         assignments: Fold table from `shared_scaffold_folds`.
+        on_fold: Optional `(fold, n_folds) -> None` progress callback, forwarded to
+            whichever runner handles this method.
         **kwargs: Forwarded to the underlying runner.
 
     Returns:
@@ -494,6 +512,7 @@ def run_cv_multitask(
         "n_inner": n_inner,
         "seed": seed,
         "assignments": assignments,
+        "on_fold": on_fold,
     }
 
     if strategy == "stacked":
@@ -549,6 +568,7 @@ def _run_cv_stacked_tfm(
     n_inner: int = 5,
     seed: int = 42,
     assignments: pl.DataFrame | None = None,
+    on_fold=None,
     **kwargs,
 ) -> pl.DataFrame:
     """Row-stacked multitask for TabICL/TabPFN, one fold per subprocess.
@@ -597,6 +617,7 @@ def _run_cv_stacked_tfm(
 
     X_all = stack_features(X_all, stacked["endpoint"].to_list(), endpoints)
     indexed = stacked.with_row_index("_row")
+    n_folds = assignments["fold"].n_unique()
 
     records: list[dict] = []
     for fold, outer, inner, train, _val, test in fold_assignment_splits(indexed, assignments):
@@ -609,5 +630,6 @@ def _run_cv_stacked_tfm(
             **kwargs,
         )
         records.extend(_oof_records(test, preds, f"{kind}_multitask", fold, outer, inner))
+        report_fold(on_fold, fold, n_folds)
 
     return pl.DataFrame(records)

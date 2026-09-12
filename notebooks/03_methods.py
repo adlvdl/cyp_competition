@@ -293,9 +293,10 @@ def _(
     # recomputes only that fingerprint's folds, not the whole sweep.
     _fp_oof_parts = []
 
-    with mo.status.progress_bar(
-        total=len(FP_SWEEP) * len(C.REGRESSION_ENDPOINTS), title="Fingerprint sweep"
-    ) as _bar:
+    # Total is folds, not (fingerprint x endpoint): a 5x5 run is 25 fits per cell,
+    # so a per-cell bar sits still for minutes at a time and looks like a hang.
+    _fp_total = len(FP_SWEEP) * len(C.REGRESSION_ENDPOINTS) * n_outer * 5
+    with mo.status.progress_bar(total=_fp_total, title="Fingerprint sweep") as _bar:
         for _fp in FP_SWEEP:
             for _endpoint in C.REGRESSION_ENDPOINTS:
                 _cache = CACHE_DIR / f"fp_{_fp}_{_endpoint}_{CACHE_SUFFIX}.parquet"
@@ -303,6 +304,9 @@ def _(
                     # Nothing is timed here on purpose: the measurement that matters
                     # was taken when this cache was built and is already in the log.
                     _oof = pl.read_parquet(_cache)
+                    # Advance by the folds this cell would have run, so the bar still
+                    # reaches 100% on a fully cached rerun.
+                    _bar.update(n_outer * 5)
                 else:
                     _t0 = time.time()
                     _oof = models.run_cv(
@@ -312,6 +316,8 @@ def _(
                         fingerprint=_fp,
                         n_bits=n_bits,
                         n_outer=n_outer,
+                        # One tick per completed fold rather than per cell.
+                        on_fold=lambda _f, _n: _bar.update(),
                     )
                     # Tag with the representation so every fingerprint's rows can
                     # live in one frame and be compared as if they were methods.
@@ -326,7 +332,6 @@ def _(
                         seconds=time.time() - _t0,
                     )
                 _fp_oof_parts.append(_oof)
-                _bar.update()
 
     fp_oof = pl.concat(_fp_oof_parts, how="vertical_relaxed")
     # "method × fingerprint" becomes the comparison unit: `lgbm_mordred` competes
@@ -568,9 +573,10 @@ def _(
     # magnitude in cost: re-running after adding TabICL must not retrain Chemprop.
     _new_oof_parts = []
 
-    with mo.status.progress_bar(
-        total=len(NEW_METHODS) * len(C.REGRESSION_ENDPOINTS), title="New model families"
-    ) as _bar:
+    # Folds, not cells. Chemprop is ~90s per fold at 50 epochs, so a per-cell bar
+    # would sit still for ~37 minutes per endpoint -- indistinguishable from a hang.
+    _new_total = len(NEW_METHODS) * len(C.REGRESSION_ENDPOINTS) * n_outer * 5
+    with mo.status.progress_bar(total=_new_total, title="New model families") as _bar:
         for _method in NEW_METHODS:
             # Matrix models run on CheMeleon embeddings (the TFM paper's
             # recommendation); graph models featurize from SMILES themselves and
@@ -583,6 +589,7 @@ def _(
                 if _cache.exists():
                     # Timed when the cache was built; the log already has it.
                     _oof = pl.read_parquet(_cache)
+                    _bar.update(n_outer * 5)
                 else:
                     _t0 = time.time()
                     if _is_tfm:
@@ -595,6 +602,7 @@ def _(
                             kind=_method,
                             features=chemeleon_features[_endpoint],
                             n_outer=n_outer,
+                            on_fold=lambda _f, _n: _bar.update(),
                         )
                     else:
                         _oof = models.run_cv(
@@ -608,6 +616,7 @@ def _(
                             n_outer=n_outer,
                             # Graph models need a scaffold-respecting early-stopping set.
                             p_val=0.1 if _method in ("chemprop", "chemeleon") else 0.0,
+                            on_fold=lambda _f, _n: _bar.update(),
                         )
                     _oof = _oof.with_columns(
                         pl.lit("chemeleon_emb" if _on_embedding else "graph").alias(
@@ -624,7 +633,6 @@ def _(
                         seconds=time.time() - _t0,
                     )
                 _new_oof_parts.append(_oof)
-                _bar.update()
 
     new_oof = pl.concat(_new_oof_parts, how="vertical_relaxed")
     new_oof.select("method", "endpoint").unique().sort(["method", "endpoint"])
@@ -743,6 +751,7 @@ def _(NEW_METHODS):
 
 @app.cell
 def _(
+    C,
     CACHE_DIR,
     CACHE_SUFFIX,
     FOLD_ASSIGNMENTS,
@@ -761,7 +770,7 @@ def _(
     time,
     timings,
 ):
-    def _single_task_on_shared_folds(method, endpoint, frame, features):
+    def _single_task_on_shared_folds(method, endpoint, frame, features, on_fold):
         """Single-task CV driven by the shared fold assignment.
 
         `models.run_cv` draws its own per-endpoint scaffold splits, which is correct
@@ -807,11 +816,18 @@ def _(
                         "y_upper": _te["y_upper"][_k],
                     }
                 )
+            on_fold()
         return pl.DataFrame(_rows)
 
+    # The worst offender before this change: 12 ticks for the entire section, so a
+    # single-task tick hid 25 folds x 4 endpoints = 100 model fits. Count folds
+    # instead -- the multitask arm is one pass over the folds, the single-task arm
+    # is one pass per endpoint.
+    _n_fold = n_outer * 5
+    _mt_total = len(MT_METHODS) * _n_fold * (1 + len(C.REGRESSION_ENDPOINTS))
     _mt_parts = []
     with mo.status.progress_bar(
-        total=len(MT_METHODS) * 2, title="Multitask vs single-task"
+        total=_mt_total, title="Multitask vs single-task"
     ) as _bar:
         for _method in MT_METHODS:
             _on_emb = _method in ("macau", "tabicl", "tabpfn")
@@ -821,6 +837,13 @@ def _(
                 _cache = CACHE_DIR / f"mt_{_method}_{_arm}_{CACHE_SUFFIX}.parquet"
                 if _cache.exists():
                     _oof = pl.read_parquet(_cache)
+                    # The multitask arm is one pass over the folds; the single-task
+                    # arm is one pass per endpoint.
+                    _bar.update(
+                        _n_fold
+                        if _arm == "multitask"
+                        else _n_fold * len(C.REGRESSION_ENDPOINTS)
+                    )
                 else:
                     _t0 = time.time()
                     if _arm == "multitask":
@@ -831,6 +854,7 @@ def _(
                             n_bits=n_bits,
                             n_outer=n_outer,
                             assignments=FOLD_ASSIGNMENTS,
+                            on_fold=lambda _f, _n: _bar.update(),
                         )
                     else:
                         _oof = pl.concat(
@@ -840,6 +864,7 @@ def _(
                                     _e,
                                     _f,
                                     _feat[_e] if _feat is not None else None,
+                                    lambda: _bar.update(),
                                 )
                                 for _e, _f in mt_frames.items()
                             ],
@@ -855,7 +880,6 @@ def _(
                         seconds=time.time() - _t0,
                     )
                 _mt_parts.append(_oof)
-                _bar.update()
 
     mt_oof = pl.concat(_mt_parts, how="vertical_relaxed")
     mt_oof.group_by("method").len().sort("method")

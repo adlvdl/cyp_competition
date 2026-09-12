@@ -259,3 +259,33 @@ def fold_assignment_splits(
         if p_val > 0:
             train, val = split_random(train, p_test=p_val, seed=seed + fold)
         yield int(fold), outer, inner, train, val, test
+
+
+#: Signature of the per-fold progress callback the CV harnesses accept.
+#:
+#: A full 5x5 run is 25 fits per (method, endpoint), and Chemprop takes ~90s per
+#: fold -- so roughly 37 minutes in which a per-method progress bar does not move,
+#: which is indistinguishable from a hang. Every harness therefore takes an optional
+#: `on_fold` callable, invoked after each fold finishes. `None` (the default) costs
+#: nothing and keeps `src/cyp` free of any notebook dependency; a notebook passes a
+#: closure that ticks `mo.status.progress_bar`.
+#:
+#: Called as ``on_fold(fold, n_folds)`` with the zero-based fold index just
+#: completed and the total expected, so a caller can render "fold 7/25" without
+#: tracking state itself.
+FoldCallback = "Callable[[int, int], None] | None"
+
+
+def report_fold(on_fold, fold: int, n_folds: int) -> None:
+    """Invoke a progress callback, swallowing anything it raises.
+
+    A broken progress bar must never kill a multi-hour training run -- the fold's
+    real work is already done by the time this is called, so an exception here would
+    discard completed results for a cosmetic failure.
+    """
+    if on_fold is None:
+        return
+    try:
+        on_fold(fold, n_folds)
+    except Exception:  # noqa: BLE001 - progress reporting is never load-bearing
+        pass

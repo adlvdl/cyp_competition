@@ -435,3 +435,34 @@ def test_the_two_tfms_have_separate_budgets() -> None:
     ensemble size, TabPFN's barely does, and TabPFN actually uses the extra features
     where TabICL did not. Sharing one budget would mis-serve both."""
     assert tabular_models.TABICL_MAX_FEATURES != tabular_models.TABPFN_MAX_FEATURES
+
+
+def test_run_cv_reports_each_fold() -> None:
+    """`models.run_cv` must tick per fold, not per call: a 5x5 run is 25 fits and a
+    caller that only learns about completion at the end cannot show progress."""
+    from cyp import constants as C
+    from cyp import data, models
+
+    frame = data.training_frame(C.REGRESSION_ENDPOINTS[1]).head(200)
+    seen: list[tuple[int, int]] = []
+    models.run_cv(
+        frame,
+        "test",
+        methods=("mean",),
+        n_bits=128,
+        n_outer=1,
+        n_inner=3,
+        on_fold=lambda fold, total: seen.append((fold, total)),
+    )
+    assert [f for f, _ in seen] == [0, 1, 2]
+    assert all(total == 3 for _, total in seen)
+
+
+def test_report_fold_swallows_callback_errors() -> None:
+    from cyp import cv
+
+    def explode(fold: int, total: int) -> None:
+        raise RuntimeError("bar died")
+
+    cv.report_fold(explode, 0, 5)  # must not raise
+    cv.report_fold(None, 0, 5)

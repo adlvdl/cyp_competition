@@ -833,6 +833,7 @@ def run_cv_subprocess(
     device: str = "cpu",
     want_interval: bool = False,
     tabicl_max_features: int = TABICL_MAX_FEATURES,
+    on_fold=None,
 ) -> "object":
     """Nested scaffold CV for a tabular foundation model, one fold per subprocess.
 
@@ -859,13 +860,16 @@ def run_cv_subprocess(
         want_interval: Also record predictive interval bounds.
         tabicl_max_features: PCA cap applied per fold for TabICL. Fitted inside the
             fold, so the projection never sees the held-out rows.
+        on_fold: Optional `(fold, n_folds) -> None` progress callback; see
+            `cv.FoldCallback`. Each fold spawns a subprocess, so without this a
+            multi-fold run shows nothing until it finishes.
 
     Returns:
         Long OOF frame, one row per (fold, compound).
     """
     import polars as pl
 
-    from .cv import scaffold_splits
+    from .cv import report_fold, scaffold_splits
 
     if len(features) != frame.height:
         raise ValueError(
@@ -875,6 +879,7 @@ def run_cv_subprocess(
 
     features = np.asarray(features)
     indexed = frame.with_row_index("_row")
+    n_folds = n_outer * n_inner
     records: list[dict] = []
 
     for fold, outer, inner, train, _val, test in scaffold_splits(
@@ -913,5 +918,7 @@ def run_cv_subprocess(
                 record["pred_lower"] = float(lower[i])
                 record["pred_upper"] = float(upper[i])
             records.append(record)
+
+        report_fold(on_fold, fold, n_folds)
 
     return pl.DataFrame(records)

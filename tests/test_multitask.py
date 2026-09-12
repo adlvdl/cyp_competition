@@ -238,3 +238,73 @@ def test_multitask_method_names_are_suffixed(toy_frames) -> None:
         toy_frames, method="ridge", n_bits=64, n_outer=1, n_inner=2, assignments=table
     )
     assert oof["method"].unique().to_list() == ["ridge_multitask"]
+
+
+# ── progress reporting ─────────────────────────────────────────────────────────
+
+
+def test_fold_callback_fires_once_per_fold(toy_frames) -> None:
+    """A 5x5 run on a graph model is ~37 minutes per endpoint. Without a per-fold
+    tick the bar does not move for that whole time, which is indistinguishable from
+    a hang -- and someone kills a run that was working."""
+    _, table = cv.shared_scaffold_folds(toy_frames, n_outer=1, n_inner=2)
+    seen: list[tuple[int, int]] = []
+    multitask.run_cv_stacked(
+        toy_frames,
+        method="ridge",
+        n_bits=64,
+        n_outer=1,
+        n_inner=2,
+        assignments=table,
+        on_fold=lambda fold, total: seen.append((fold, total)),
+    )
+    assert len(seen) == 2
+    assert [f for f, _ in seen] == [0, 1]
+    assert all(total == 2 for _, total in seen)
+
+
+def test_dispatcher_forwards_the_callback(toy_frames) -> None:
+    """Every strategy must report progress, not just the one the notebook happens
+    to exercise first."""
+    _, table = cv.shared_scaffold_folds(toy_frames, n_outer=1, n_inner=2)
+    seen: list[int] = []
+    multitask.run_cv_multitask(
+        toy_frames,
+        "ridge",
+        n_bits=64,
+        n_outer=1,
+        n_inner=2,
+        assignments=table,
+        on_fold=lambda fold, total: seen.append(fold),
+    )
+    assert len(seen) == 2
+
+
+def test_a_broken_progress_bar_cannot_kill_a_run(toy_frames) -> None:
+    """The fold's real work is already done when the callback fires, so an
+    exception there would discard completed results for a cosmetic failure."""
+    _, table = cv.shared_scaffold_folds(toy_frames, n_outer=1, n_inner=2)
+
+    def explode(fold: int, total: int) -> None:
+        raise RuntimeError("progress bar died")
+
+    oof = multitask.run_cv_stacked(
+        toy_frames,
+        method="ridge",
+        n_bits=64,
+        n_outer=1,
+        n_inner=2,
+        assignments=table,
+        on_fold=explode,
+    )
+    assert oof.height == sum(f.height for f in toy_frames.values())
+
+
+def test_callback_is_optional(toy_frames) -> None:
+    """Passing nothing must cost nothing -- `src/cyp` stays free of any notebook
+    dependency."""
+    _, table = cv.shared_scaffold_folds(toy_frames, n_outer=1, n_inner=2)
+    oof = multitask.run_cv_stacked(
+        toy_frames, method="ridge", n_bits=64, n_outer=1, n_inner=2, assignments=table
+    )
+    assert oof.height > 0
