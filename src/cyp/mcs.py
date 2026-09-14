@@ -169,6 +169,13 @@ def mcs_plot(
     label_list = list(means.index)
     x_labels = [f"{m}\n{means.loc[m]:.3g}" for m in label_list]
     y_labels = [f"{m}\n{means.loc[m]:.3g}" for m in label_list]
+    # Set the tick POSITIONS before the labels. Calling set_*ticklabels alone leaves
+    # matplotlib's default 10 locators in place, which silently works while a grid
+    # has ~5 methods and raises "FixedLocator locations (10) does not match the
+    # number of labels (28)" once it has more -- as the combined Part 3 grid does.
+    positions = np.arange(len(label_list)) + 0.5
+    hax.set_xticks(positions)
+    hax.set_yticks(positions)
     hax.set_xticklabels(x_labels, size=axis_text_size, ha="center", va="top", rotation=0)
     hax.set_yticklabels(y_labels, size=axis_text_size, ha="center", va="center", rotation=90)
     hax.set_xlabel("")

@@ -244,21 +244,33 @@ def fold_assignment_splits(
         seed: Seed for that validation carve-out.
     """
     folds = assignments.select(key, "fold", "outer_fold", "inner_fold").unique()
-    joined = df.join(folds, on=key, how="inner")
 
-    for (fold,), group in sorted(
-        joined.group_by(["fold"]), key=lambda kv: kv[0][0]
-    ):
-        outer = int(group["outer_fold"][0])
-        inner = int(group["inner_fold"][0])
-        test = group.drop("fold", "outer_fold", "inner_fold")
-        train = joined.filter(pl.col("fold") != fold).drop(
-            "fold", "outer_fold", "inner_fold"
-        )
+    # Iterate folds in order, scoping each to its own outer repeat.
+    #
+    # The subtlety that made this wrong the first time: with `n_outer > 1` a
+    # compound appears once per outer repeat, in a *different* fold each time. So
+    # "every row whose fold != f" still contains the held-out compounds, via their
+    # other repeats' entries -- which meant 100% of test compounds were also in
+    # training. Train membership must therefore be decided by compound identity
+    # within one repeat, never by filtering the duplicated fold column.
+    fold_meta = (
+        folds.select("fold", "outer_fold", "inner_fold").unique().sort("fold")
+    )
+
+    for row in fold_meta.iter_rows(named=True):
+        fold, outer, inner = row["fold"], row["outer_fold"], row["inner_fold"]
+
+        # This repeat's assignment only: one row per compound.
+        repeat = folds.filter(pl.col("outer_fold") == outer)
+        test_names = repeat.filter(pl.col("fold") == fold)[key]
+
+        test = df.filter(pl.col(key).is_in(test_names))
+        train = df.filter(~pl.col(key).is_in(test_names))
+
         val = None
         if p_val > 0:
             train, val = split_random(train, p_test=p_val, seed=seed + fold)
-        yield int(fold), outer, inner, train, val, test
+        yield int(fold), int(outer), int(inner), train, val, test
 
 
 #: Signature of the per-fold progress callback the CV harnesses accept.

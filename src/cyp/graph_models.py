@@ -12,8 +12,9 @@ outright -- which is why this is the highest-expected-value item in PLAN.md.
 Python API in-process. This is not stylistic. Running many CV folds through the
 Python API inside one kernel exhausts the MPS allocator on Apple Silicon and stalls
 between folds (PXR lost real time to this, documented in its "Stalling the M4 engine"
-post). A subprocess gets a fresh allocator per fold, and `PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.0`
-removes the ceiling that triggers macOS memory-pressure stalls.
+post). A subprocess gets a fresh allocator per fold, and the MPS watermark is capped
+rather than removed -- see `_run_chemprop_cli` for why `0.0` was actively harmful
+across a long sequence of fits.
 
 The same reasoning drives `chemeleon_embed` and `device`: PyTorch ships its own
 OpenMP runtime, and once torch is imported into a process a later LightGBM fit
@@ -123,12 +124,36 @@ def _write_smiles_csv(
 
 
 def _run_chemprop_cli(args: list[str]) -> None:
-    """Run the chemprop CLI, logging to file; raise with a log tail on failure."""
+    """Run the chemprop CLI, logging to file; raise with a log tail on failure.
+
+    ## The MPS degradation this guards against
+
+    In the 2026-09-12 full run, chemprop slowed monotonically across consecutive
+    folds -- 0.55, 1.63, 7.79, 6.57 seconds per compound across four endpoints, a
+    ~14x degradation on comparable work -- while TabICL and TabPFN, which also run
+    torch per fold, showed no trend. The original mitigation set
+    `PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.0`, which *removes* the allocator ceiling
+    entirely. That is the opposite of what is wanted across many sequential fits:
+    with no watermark, MPS never reclaims its cache, so pressure accumulates from
+    one fold to the next until the process is thrashing.
+
+    `0.0` is therefore replaced by a real ratio, and `PYTORCH_MPS_ALLOCATOR_POLICY`
+    asks the allocator to release unused blocks back to the system between runs.
+    Each call is already its own process; what was missing was letting that process
+    give memory back.
+    """
     CHEMPROP_LOG.parent.mkdir(parents=True, exist_ok=True)
     cmd = [str(CHEMPROP_BIN), *args]
-    # Removing the MPS allocator ceiling prevents the macOS memory-pressure stalls
-    # that appear between folds on Apple Silicon.
-    env = {**os.environ, "PYTORCH_MPS_HIGH_WATERMARK_RATIO": "0.0"}
+    env = {
+        **os.environ,
+        # A real ceiling, not 0.0 -- an unbounded cache is what let pressure build
+        # across folds. Both watermarks are set explicitly: PyTorch derives the low
+        # watermark as 2x the high one by default, so a high of 0.7 yields a low of
+        # 1.4 and chemprop dies with "invalid low watermark ratio 1.4". Both must
+        # be <= 1.0.
+        "PYTORCH_MPS_HIGH_WATERMARK_RATIO": "0.5",
+        "PYTORCH_MPS_LOW_WATERMARK_RATIO": "0.4",
+    }
     with open(CHEMPROP_LOG, "a") as log:
         log.write(f"\n{'=' * 60}\nCMD: {' '.join(cmd)}\n{'=' * 60}\n")
         result = subprocess.run(cmd, stdout=log, stderr=log, text=True, env=env)

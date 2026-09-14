@@ -466,3 +466,36 @@ def test_report_fold_swallows_callback_errors() -> None:
 
     cv.report_fold(explode, 0, 5)  # must not raise
     cv.report_fold(None, 0, 5)
+
+
+def test_openmp_guard_warns_when_another_runtime_is_resident() -> None:
+    """Regression guard for a silent 14.5-hour hang.
+
+    smurff and lightgbm each vendor an OpenMP runtime; importing torch alongside one
+    can deadlock on a barrier with no exception and no CPU use. The 2026-09-13 run
+    lost most of a day to this because the single-task arm fitted TabICL in-process
+    straight after Macau. The in-process classes must at least say so.
+    """
+    import warnings
+
+    import cyp  # noqa: F401 - imports lightgbm, which is one of the conflicting runtimes
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        tabular_models._warn_if_openmp_conflict("TabICL")
+    assert len(caught) == 1
+    assert "predict_subprocess" in str(caught[0].message)
+
+
+def test_openmp_guard_is_quiet_when_alone(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No warning when no conflicting runtime is loaded -- the guard must not cry
+    wolf in a torch-only script, where the in-process path is correct."""
+    import sys
+    import warnings
+
+    clean = {k: v for k, v in sys.modules.items() if k not in ("smurff", "lightgbm")}
+    monkeypatch.setattr(sys, "modules", clean)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        tabular_models._warn_if_openmp_conflict("TabICL")
+    assert not caught

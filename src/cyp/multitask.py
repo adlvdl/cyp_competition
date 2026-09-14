@@ -183,7 +183,9 @@ def run_cv_stacked(
                 pl.DataFrame(
                     {
                         "Molecule_Name": frame["Molecule_Name"],
-                        "endpoint": pl.lit(endpoint, dtype=pl.Utf8),
+                        # A plain repeated value, not pl.lit(): the DataFrame
+                        # constructor takes data, and an Expr is not data.
+                        "endpoint": [endpoint] * frame.height,
                         "_feat": matrix.tolist(),
                     }
                 )
@@ -601,7 +603,9 @@ def _run_cv_stacked_tfm(
                 pl.DataFrame(
                     {
                         "Molecule_Name": frame["Molecule_Name"],
-                        "endpoint": pl.lit(endpoint, dtype=pl.Utf8),
+                        # A plain repeated value, not pl.lit(): the DataFrame
+                        # constructor takes data, and an Expr is not data.
+                        "endpoint": [endpoint] * frame.height,
                         "_feat": matrix.tolist(),
                     }
                 )
@@ -633,3 +637,72 @@ def _run_cv_stacked_tfm(
         report_fold(on_fold, fold, n_folds)
 
     return pl.DataFrame(records)
+
+
+def fit_predict_test_multitarget(
+    frames: dict[str, pl.DataFrame],
+    test_smiles: list[str],
+    from_foundation: str | None = None,
+    p_val: float = 0.1,
+    seed: int = 42,
+    **chemprop_kwargs,
+) -> dict[str, np.ndarray]:
+    """Train one multi-target D-MPNN on every endpoint, predict the blind test set.
+
+    The production counterpart to `run_cv_multitarget`: same wide-frame construction
+    and the same masked-loss handling of unmeasured cells, but fitted once on all
+    labelled data rather than per fold.
+
+    Deliberately *not* cached to disk. CLAUDE.md's convention is to cache CV (slow,
+    repeatable) and never the final fit, because a stale final-fit cache can silently
+    disagree with a retrained CV cache -- a real bug caught while building this repo,
+    where a submission kept using calibration parameters from before a CV retrain.
+    One fit is cheap next to 25 folds.
+
+    Args:
+        frames: Endpoint name -> that endpoint's labelled frame.
+        test_smiles: Blind test SMILES, in submission row order.
+        from_foundation: Backbone to warm-start from, e.g. "CHEMELEON"; None trains
+            from scratch.
+        p_val: Fraction held out for early stopping. Carved at random from the
+            training compounds -- there is no held-out fold here, so scaffold
+            grouping cannot be preserved; this only picks a stopping point.
+        seed: Seed for the validation carve-out.
+        **chemprop_kwargs: Forwarded to `ChempropMultitargetModel`.
+
+    Returns:
+        Endpoint name -> predictions aligned with `test_smiles`.
+    """
+    from .graph_models import ChempropMultitargetModel
+
+    endpoints = list(frames)
+
+    # Wide frame: one row per compound, one column per endpoint, null where that
+    # compound was never measured for that isoform. Chemprop masks the nulls.
+    wide = None
+    for endpoint in endpoints:
+        block = frames[endpoint].select("Molecule_Name", "SMILES", pl.col("y_true").alias(endpoint))
+        wide = (
+            block
+            if wide is None
+            else wide.join(block, on=["Molecule_Name", "SMILES"], how="full", coalesce=True)
+        )
+    wide = wide.sort("Molecule_Name")
+
+    rng = np.random.default_rng(seed)
+    order = rng.permutation(wide.height)
+    n_val = max(1, int(p_val * wide.height))
+    val_wide, fit_wide = wide[order[:n_val]], wide[order[n_val:]]
+
+    model = ChempropMultitargetModel(
+        targets=endpoints, from_foundation=from_foundation, **chemprop_kwargs
+    )
+    model.fit(
+        fit_wide["SMILES"].to_list(),
+        fit_wide.select(endpoints).to_numpy(),
+        smiles_val=val_wide["SMILES"].to_list(),
+        y_val=val_wide.select(endpoints).to_numpy(),
+    )
+
+    predictions = model.predict(list(test_smiles))
+    return {endpoint: predictions[:, i].astype(float) for i, endpoint in enumerate(endpoints)}

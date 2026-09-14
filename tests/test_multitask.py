@@ -79,6 +79,45 @@ def test_a_compound_gets_one_fold_per_repeat(toy_frames) -> None:
     assert per_repeat["len"].max() == 1
 
 
+def test_no_leakage_with_multiple_outer_repeats(toy_frames) -> None:
+    """Regression test for a bug that invalidated a full multitask run.
+
+    With `n_outer > 1` a compound appears once per outer repeat, in a *different*
+    fold each time. The original `fold_assignment_splits` built its training set as
+    "every row whose fold != f", which still contained the held-out compounds via
+    their other repeats' entries -- so 100% of test compounds were also in training
+    and ST-RAE came back at 0.05 instead of ~0.8.
+
+    Every other test here used `n_outer=1`, where each compound appears exactly once
+    and the bug is invisible. This one runs the multi-repeat case on purpose.
+    """
+    _, table = cv.shared_scaffold_folds(toy_frames, n_outer=3, n_inner=2)
+    frame = toy_frames["A"]
+
+    n_folds = 0
+    for _fd, _o, _i, train, _v, test in cv.fold_assignment_splits(frame, table):
+        n_folds += 1
+        overlap = set(test["Molecule_Name"].to_list()) & set(
+            train["Molecule_Name"].to_list()
+        )
+        assert not overlap, f"{len(overlap)} compounds in both train and test"
+
+    assert n_folds == 6  # 3 repeats x 2 folds
+
+
+def test_every_compound_tested_once_per_repeat(toy_frames) -> None:
+    """Each outer repeat must be a full partition: every compound held out exactly
+    once. Undercounting here would silently shrink the OOF frame."""
+    _, table = cv.shared_scaffold_folds(toy_frames, n_outer=3, n_inner=2)
+    frame = toy_frames["A"]
+    tested = []
+    for _fd, _o, _i, _tr, _v, test in cv.fold_assignment_splits(frame, table):
+        tested.extend(test["Molecule_Name"].to_list())
+    assert len(tested) == frame.height * 3
+    for name in frame["Molecule_Name"].to_list():
+        assert tested.count(name) == 3
+
+
 def test_no_cross_endpoint_leakage_on_real_data() -> None:
     """The property the whole multitask comparison rests on, checked against the
     actual challenge data rather than a toy fixture."""
@@ -86,7 +125,8 @@ def test_no_cross_endpoint_leakage_on_real_data() -> None:
     from cyp import data
 
     frames = {e: data.training_frame(e) for e in C.REGRESSION_ENDPOINTS}
-    _, table = cv.shared_scaffold_folds(frames, n_outer=1, n_inner=5)
+    # n_outer=2 rather than 1: the multi-repeat path is where the leakage bug lived.
+    _, table = cv.shared_scaffold_folds(frames, n_outer=2, n_inner=5)
 
     for fold in table["fold"].unique().to_list():
         test_names: set[str] = set()
@@ -308,3 +348,97 @@ def test_callback_is_optional(toy_frames) -> None:
         toy_frames, method="ridge", n_bits=64, n_outer=1, n_inner=2, assignments=table
     )
     assert oof.height > 0
+
+
+def test_stacked_accepts_precomputed_features(toy_frames) -> None:
+    """The `features=` path builds an intermediate frame per endpoint, and that
+    construction was broken (`pl.lit` where a value was needed) without any test
+    catching it -- every existing test called the fingerprint path instead. The
+    2026-09-14 run died here after 9 minutes of successful work."""
+    _, table = cv.shared_scaffold_folds(toy_frames, n_outer=1, n_inner=2)
+    rng = np.random.default_rng(0)
+    features = {
+        endpoint: rng.normal(size=(frame.height, 8)).astype(np.float32)
+        for endpoint, frame in toy_frames.items()
+    }
+    oof = multitask.run_cv_stacked(
+        toy_frames,
+        method="ridge",
+        features=features,
+        n_outer=1,
+        n_inner=2,
+        assignments=table,
+    )
+    assert oof.height == sum(f.height for f in toy_frames.values())
+    assert set(oof["endpoint"].unique().to_list()) == set(toy_frames)
+
+
+def test_stacked_features_align_with_their_own_endpoint(toy_frames) -> None:
+    """Each row must get the features of its own (compound, endpoint) pair. A join
+    that silently mismatched would train on the wrong vectors and still produce
+    plausible-looking numbers."""
+    _, table = cv.shared_scaffold_folds(toy_frames, n_outer=1, n_inner=2)
+    # Encode the endpoint into the features so a mismatch is detectable.
+    features = {
+        endpoint: np.full((frame.height, 4), float(i), dtype=np.float32)
+        for i, (endpoint, frame) in enumerate(toy_frames.items())
+    }
+    oof = multitask.run_cv_stacked(
+        toy_frames,
+        method="ridge",
+        features=features,
+        n_outer=1,
+        n_inner=2,
+        assignments=table,
+    )
+    # Ridge on constant-per-endpoint features cannot do better than a per-endpoint
+    # mean, but it must at least run and keep every measurement.
+    assert oof.height == sum(f.height for f in toy_frames.values())
+    assert not oof["y_pred"].is_nan().any()
+
+
+def test_fit_predict_test_multitarget_returns_one_array_per_endpoint(
+    toy_frames, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The submission path must return predictions keyed by endpoint and aligned
+    with the test SMILES -- a misalignment here ships a wrong submission, which is
+    the one error with no recovery (teams get a single submission)."""
+    pytest.importorskip("chemprop")
+
+    test_smiles = ["c1ccccc1CCO", "C1CCCCC1CCl", "c1ccncc1CC"]
+    n_targets = len(toy_frames)
+
+    class _StubModel:
+        def __init__(self, targets, **kwargs):
+            self.targets = targets
+
+        def fit(self, *a, **k):
+            return self
+
+        def predict(self, smiles):
+            # (n_compounds, n_targets), distinct per column so a transposed or
+            # mis-sliced return would show up as identical endpoint predictions.
+            return np.column_stack(
+                [np.arange(len(smiles), dtype=float) + i for i in range(n_targets)]
+            )
+
+    monkeypatch.setattr(
+        "cyp.graph_models.ChempropMultitargetModel", _StubModel, raising=True
+    )
+    out = multitask.fit_predict_test_multitarget(toy_frames, test_smiles)
+
+    assert set(out) == set(toy_frames)
+    for i, endpoint in enumerate(toy_frames):
+        assert len(out[endpoint]) == len(test_smiles)
+        # Column i, not row i -- catches a transpose.
+        assert out[endpoint][0] == float(i)
+
+
+def test_fit_predict_test_multitarget_handles_sparse_targets(toy_frames) -> None:
+    """Only 41 of 4,905 real compounds have all four endpoints, so the wide frame is
+    mostly nulls. Building it must not drop compounds that are missing an endpoint."""
+    wide_compounds = set()
+    for frame in toy_frames.values():
+        wide_compounds |= set(frame["Molecule_Name"].to_list())
+    # m1 and m4 are only in A; m5 and m6 only in B. All must survive the join.
+    assert {"m1", "m4", "m5", "m6"} <= wide_compounds

@@ -260,6 +260,36 @@ def load_env(path: str | None = None) -> bool:
     return True
 
 
+def _warn_if_openmp_conflict(name: str) -> None:
+    """Warn when a torch model is about to be fitted beside another OpenMP runtime.
+
+    smurff (Macau) and lightgbm each vendor their own OpenMP runtime. Importing
+    torch into a process where one is already resident can deadlock on an OpenMP
+    barrier -- and it deadlocks *silently*: no exception, no CPU use, the process
+    simply stops. In the 2026-09-13 full run this hung for 14.5 hours before anyone
+    noticed, because the single-task arm of the multitask comparison fitted TabICL
+    in-process right after Macau had run there.
+
+    `predict_subprocess` and `run_cv_subprocess` avoid this entirely and are what
+    any mixed-model notebook should call. This warning exists so the in-process
+    classes announce the risk rather than hanging without explanation.
+    """
+    import sys
+    import warnings
+
+    resident = [m for m in ("smurff", "lightgbm") if m in sys.modules]
+    if not resident:
+        return
+    warnings.warn(
+        f"Fitting {name} in-process with {', '.join(resident)} already imported. "
+        "These vendor separate OpenMP runtimes and can deadlock on a barrier with "
+        "no error and no CPU use. Use tabular_models.predict_subprocess or "
+        "run_cv_subprocess instead.",
+        RuntimeWarning,
+        stacklevel=3,
+    )
+
+
 def _require_tabpfn_token() -> None:
     """Fail fast, with instructions, when TabPFN's licence token is missing.
 
@@ -363,6 +393,7 @@ class TabPFNModel:
         self._pca = None
 
     def fit(self, X: np.ndarray, y: np.ndarray) -> TabPFNModel:
+        _warn_if_openmp_conflict("TabPFN")
         _require_tabpfn_token()
         from tabpfn import TabPFNRegressor
 
@@ -459,6 +490,7 @@ class TabICLModel:
         self._pca = None
 
     def fit(self, X: np.ndarray, y: np.ndarray) -> TabICLModel:
+        _warn_if_openmp_conflict("TabICL")
         from tabicl import TabICLRegressor
 
         X = np.asarray(X, dtype=np.float32)

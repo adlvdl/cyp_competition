@@ -56,7 +56,9 @@ def _supported_kwargs(fp_class, kwargs: dict) -> dict:
     return {k: v for k, v in kwargs.items() if k in accepted}
 
 
-def compute(smiles: Sequence[str], kind: str = "ecfp", **kwargs) -> np.ndarray:
+def compute(
+    smiles: Sequence[str], kind: str = "ecfp", n_jobs: int | None = -1, **kwargs
+) -> np.ndarray:
     """Compute a fingerprint matrix for `smiles`.
 
     Conformer-requiring fingerprints get ETKDG conformers generated automatically.
@@ -68,6 +70,14 @@ def compute(smiles: Sequence[str], kind: str = "ecfp", **kwargs) -> np.ndarray:
     Args:
         smiles: SMILES strings.
         kind: One of `AVAILABLE`.
+        n_jobs: Cores for featurization, forwarded to skfp. Defaults to -1 (all
+            cores) rather than skfp's own `None` (one core), because the difference
+            is not marginal for the expensive descriptors: in the 2026-09-12 full
+            run, single-threaded Mordred took **62 minutes** for one endpoint
+            against ~90 seconds for ECFP4, and RDKit fingerprint cost 57 minutes
+            across four endpoints. Cheap fingerprints hide the setting entirely;
+            Mordred and RDKit are dominated by it. Pass None to restore skfp's
+            single-core behaviour.
         **kwargs: Forwarded to the skfp class where supported (e.g. `radius=3,
             fp_size=1024`).
 
@@ -75,7 +85,7 @@ def compute(smiles: Sequence[str], kind: str = "ecfp", **kwargs) -> np.ndarray:
         Array of shape (len(smiles), n_features).
     """
     fp_class = _resolve(kind)
-    kwargs = _supported_kwargs(fp_class, kwargs)
+    kwargs = _supported_kwargs(fp_class, {**kwargs, "n_jobs": n_jobs})
     featurizer = fp_class(**kwargs) if kwargs else fp_class()
 
     inputs: Sequence = smiles

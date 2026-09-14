@@ -140,6 +140,7 @@ def _():
     import os
     import sys
     import time
+    from datetime import date
     from pathlib import Path
 
     import marimo as mo
@@ -159,6 +160,7 @@ def _():
         mcs,
         models,
         multitask,
+        submission,
         timings,
     )
     from cyp import constants as C
@@ -172,6 +174,7 @@ def _():
         cv,
         cyp_download,
         data,
+        date,
         evaluation,
         fingerprints,
         mcs,
@@ -181,6 +184,7 @@ def _():
         np,
         os,
         pl,
+        submission,
         time,
         timings,
     )
@@ -188,7 +192,9 @@ def _():
 
 @app.cell
 def _(mo):
-    QUICK = mo.ui.checkbox(value=True, label="Quick mode (1 outer repeat, 1024 bits)")
+    QUICK = mo.ui.checkbox(
+        value=False, label="Quick mode (1 outer repeat, 1024 bits)"
+    )
     QUICK
     return (QUICK,)
 
@@ -475,7 +481,15 @@ def _(mo, models, os):
     load_env()
     HAS_TABPFN_TOKEN = bool(os.environ.get("TABPFN_TOKEN"))
 
-    NEW_METHODS = ["macau", "tabicl", "chemprop", "chemeleon"]
+    # `chemeleon` (Chemprop fine-tuned from the CheMeleon backbone) is deliberately
+    # absent. In the 2026-09-12 full run it spent 11.4 hours on a single endpoint --
+    # roughly 53x what `chemprop`, the identical architecture, took on the same 25
+    # folds -- without producing a result. Both run on MPS with num_workers=0, and
+    # Chemprop itself degraded across the run (13 min -> 35 min -> 3h14m -> 4h15m on
+    # comparable endpoints), so this looks like progressive MPS slowdown rather than
+    # anything data-dependent. Re-add it only after that is diagnosed, ideally with
+    # the accelerator forced to CPU for comparison.
+    NEW_METHODS = ["macau", "tabicl", "chemprop"]
     if HAS_TABPFN_TOKEN:
         NEW_METHODS.insert(2, "tabpfn")
 
@@ -744,7 +758,9 @@ def _(mo):
 def _(NEW_METHODS):
     # Every method that has a multitask formulation, plus the tree baselines. `mean`
     # is excluded: predicting a constant cannot borrow strength, so a multitask
-    # version of it would be the same model with extra steps.
+    # version of it would be the same model with extra steps. `chemeleon` is absent
+    # for the runtime reason documented on NEW_METHODS above -- and the multitask
+    # arm would be worse, since it trains one model over all four endpoints at once.
     MT_METHODS = ["lgbm", "xgb", *NEW_METHODS]
     return (MT_METHODS,)
 
@@ -789,6 +805,40 @@ def _(
         for _fd, _o, _i, _tr, _v, _te in cv.fold_assignment_splits(
             indexed, FOLD_ASSIGNMENTS, p_val=0.1 if method in ("chemprop", "chemeleon") else 0.0
         ):
+            if method in ("tabicl", "tabpfn"):
+                # Never fit a TFM in this process. Macau runs in-process and leaves
+                # smurff's OpenMP runtime resident; importing torch alongside it
+                # deadlocks on an OpenMP barrier -- observed as a silent 14.5-hour
+                # hang in the 2026-09-13 run, with no error and no CPU use. The
+                # multitask arm already routed through predict_subprocess; this arm
+                # did not, which is how the collision got through.
+                from cyp.tabular_models import predict_subprocess
+
+                _p, _, _ = predict_subprocess(
+                    _X[_tr["_row"].to_numpy()],
+                    _tr["y_true"].to_numpy(),
+                    _X[_te["_row"].to_numpy()],
+                    kind=method,
+                )
+                _p = np.asarray(_p, dtype=float)
+                for _k in range(_te.height):
+                    _rows.append(
+                        {
+                            "method": f"{method}_singletask",
+                            "endpoint": endpoint,
+                            "fold": _fd,
+                            "outer_fold": _o,
+                            "inner_fold": _i,
+                            "Molecule_Name": _te["Molecule_Name"][_k],
+                            "y_true": float(_te["y_true"][_k]),
+                            "y_pred": float(_p[_k]),
+                            "y_lower": _te["y_lower"][_k],
+                            "y_upper": _te["y_upper"][_k],
+                        }
+                    )
+                on_fold()
+                continue
+
             _model = models.MODEL_FACTORIES[method]()
             if models._needs_smiles(_model):
                 _kw = (
@@ -964,10 +1014,31 @@ def _(MT_METHODS, evaluation, mo, mt_oof, pl):
         if mt_oof.filter(pl.col("method") == _a).height == 0:
             continue
         try:
-            _result = evaluation.paired_bootstrap(
-                mt_oof, method_a=_a, method_b=_b, metric="st_rae"
+            # paired_bootstrap takes aligned arrays, not a frame: join the two arms
+            # on (endpoint, fold, compound) so every resample compares predictions
+            # for the same measurement.
+            _wide = (
+                mt_oof.filter(pl.col("method") == _a)
+                .select("endpoint", "fold", "Molecule_Name", "y_true", "y_lower",
+                        "y_upper", pl.col("y_pred").alias("pred_a"))
+                .join(
+                    mt_oof.filter(pl.col("method") == _b).select(
+                        "endpoint", "fold", "Molecule_Name",
+                        pl.col("y_pred").alias("pred_b"),
+                    ),
+                    on=["endpoint", "fold", "Molecule_Name"],
+                    how="inner",
+                )
             )
-            _rows.append({"model": _method, **_result})
+            _result = evaluation.paired_bootstrap(
+                _wide["y_true"].to_numpy(),
+                _wide["pred_a"].to_numpy(),
+                _wide["pred_b"].to_numpy(),
+                metric="st_rae",
+                y_lower=_wide["y_lower"].to_numpy(),
+                y_upper=_wide["y_upper"].to_numpy(),
+            )
+            _rows.append({"model": _method, "n": _wide.height, **_result})
         except Exception as _exc:  # noqa: BLE001 - surface, do not abort the sweep
             _rows.append({"model": _method, "error": str(_exc)[:80]})
 
@@ -1072,13 +1143,34 @@ def _(evaluation, fp_oof, new_oof, pl):
     # Fold the fingerprint sweep and the new families into one frame. The tree rows
     # keep their fingerprint tag so `lgbm_mordred` stays distinguishable from
     # `lgbm_ecfp`; the new families are already unambiguous.
+    # Column ORDER matters to pl.concat, not just column names: dropping "method"
+    # and renaming "method_fp" into it leaves `method` at the end of the frame,
+    # while new_oof still has it first, and vertical_relaxed refuses that. Both
+    # sides are therefore projected onto one explicit order rather than relying on
+    # whatever order the rename/drop chain happens to produce.
+    _COMBINED_COLUMNS = [
+        "method",
+        "endpoint",
+        "fold",
+        "outer_fold",
+        "inner_fold",
+        "Molecule_Name",
+        "y_true",
+        "y_pred",
+        "y_lower",
+        "y_upper",
+        "representation",
+    ]
     _trees = (
         fp_oof.drop("method")
         .rename({"method_fp": "method"})
         .drop("fingerprint")
         .with_columns(pl.lit("fingerprint").alias("representation"))
+        .select(_COMBINED_COLUMNS)
     )
-    combined_oof = pl.concat([_trees, new_oof], how="vertical_relaxed")
+    combined_oof = pl.concat(
+        [_trees, new_oof.select(_COMBINED_COLUMNS)], how="vertical_relaxed"
+    )
     combined_fold_scores = evaluation.fold_metrics(combined_oof)
     return combined_fold_scores, combined_oof
 
@@ -1170,8 +1262,31 @@ def _(combined_macro_summary, combined_oof, evaluation, mo, pl):
             "displaces it, so no pairwise test is needed."
         )
     else:
+        # paired_bootstrap takes aligned arrays, not a frame: join the two methods
+        # on (endpoint, fold, compound) so each resample compares the same
+        # measurement under both.
+        _pair = (
+            combined_oof.filter(pl.col("method") == _best)
+            .select(
+                "endpoint", "fold", "Molecule_Name", "y_true", "y_lower", "y_upper",
+                pl.col("y_pred").alias("_best_pred"),
+            )
+            .join(
+                combined_oof.filter(pl.col("method") == _incumbent).select(
+                    "endpoint", "fold", "Molecule_Name",
+                    pl.col("y_pred").alias("_inc_pred"),
+                ),
+                on=["endpoint", "fold", "Molecule_Name"],
+                how="inner",
+            )
+        )
         _p = evaluation.paired_bootstrap(
-            combined_oof, method_a=_best, method_b=_incumbent, metric="st_rae"
+            _pair["y_true"].to_numpy(),
+            _pair["_best_pred"].to_numpy(),
+            _pair["_inc_pred"].to_numpy(),
+            metric="st_rae",
+            y_lower=_pair["y_lower"].to_numpy(),
+            y_upper=_pair["y_upper"].to_numpy(),
         )
         _verdict = mo.md(
             f"**`{_best}` vs `{_incumbent}`** (macro-ranked best vs best LightGBM):\n\n"
@@ -1306,7 +1421,8 @@ def _(C, calibration, combined_macro_summary, combined_oof, evaluation, pl):
         _sub = combined_oof.filter(pl.col("method") == _method)
         for _kind in ("raw", "linear", "isotonic"):
             _cal = calibration.crossfit_calibrate(_sub, kind=_kind)
-            _scores = evaluation.fold_metrics(_cal, pred_col="y_pred_cal")
+            # `crossfit_calibrate` names its output `y_cal`, not `y_pred_cal`.
+            _scores = evaluation.fold_metrics(_cal, pred_col="y_cal")
             _macro = evaluation.macro_averaged_fold_metrics(
                 {
                     _e: _scores.filter(pl.col("endpoint") == _e)
@@ -1341,6 +1457,246 @@ def _(combined_macro_summary, combined_oof, evaluation, pl):
     )
     bias_table
     return (bias_table,)
+
+
+@app.cell
+def _(mo):
+    mo.md(
+        r"""
+    ## Part 6 — Submission (regression track only)
+
+    `chemprop_multitask` won this comparison outright: macro ST-RAE **0.7280**
+    against 0.7599 for the best alternative, and separable from every rival at
+    p=0.0000 with the confidence interval entirely below zero. That is a ranking the
+    CV can actually support, which is not something PXR could say of its finalists.
+
+    **This ships the activity track only.** The TDI track is deliberately absent:
+    this notebook never ran it, and the mechanism behind the win does not obviously
+    transfer. Multitask works here because 26.7% of compounds carry more than one
+    regression endpoint, giving the shared encoder real cross-endpoint signal — but
+    only **5.4%** of TDI compounds appear in both isoforms. Submitting a TDI model on
+    that assumption, with no CV number behind it, would be guessing. Notebook 04 runs
+    the same single-task/multitask comparison for TDI and produces that submission
+    once there is a measured result to stand on.
+
+    **Uncalibrated, on purpose.** `01_baseline` found linear calibration helped every
+    endpoint, so there is probably headroom here — but calibrating properly means
+    cross-fitting per endpoint and checking it does not undo the multitask gain,
+    which is a notebook's worth of work rather than a footnote to this one. Shipping
+    the measured model now and calibrating deliberately later is the honest order.
+
+    The expected-performance table below is computed fresh from this run's OOF
+    predictions for the exact method being submitted — not borrowed from a
+    diagnostic table keyed on a different one. It is what the interim leaderboard
+    reveal gets checked against.
+    """
+    )
+    return
+
+
+@app.cell
+def _(C, evaluation, pl):
+    SUBMIT_METHOD = "chemprop_multitask"
+
+    def _markdown_table(frame, cols, headers) -> str:
+        lines = [
+            "| " + " | ".join(headers) + " |",
+            "|" + "|".join([":--"] + ["--:"] * (len(cols) - 1)) + "|",
+        ]
+        for row in frame.select(cols).iter_rows():
+            cells = [f"{v:.4f}" if isinstance(v, float) else str(v) for v in row]
+            lines.append("| " + " | ".join(cells) + " |")
+        return "\n".join(lines)
+
+    return SUBMIT_METHOD, _markdown_table
+
+
+@app.cell
+def _(C, CACHE_DIR, CACHE_SUFFIX, SUBMIT_METHOD, _markdown_table, evaluation, pl):
+    # Read the winner's OOF straight from its cache so the quoted expectation and
+    # the shipped model are provably the same thing.
+    _oof = pl.read_parquet(CACHE_DIR / f"mt_{SUBMIT_METHOD}_{CACHE_SUFFIX}.parquet")
+    _scores = evaluation.fold_metrics(_oof)
+
+    _per_endpoint = (
+        _scores.group_by("endpoint")
+        .agg(
+            pl.col("st_rae").mean().alias("st_rae_mean"),
+            pl.col("st_rae").std().alias("st_rae_std"),
+        )
+        .sort("endpoint")
+    )
+    # The macro-average is the row that decides rank -- see the non-negotiable in
+    # CLAUDE.md -- so it goes in the table alongside the per-endpoint values.
+    _macro_folds = evaluation.macro_averaged_fold_metrics(
+        {
+            _e: _scores.filter(pl.col("endpoint") == _e)
+            for _e in C.REGRESSION_ENDPOINTS
+        },
+        metric_col="st_rae",
+    )
+    _macro_row = pl.DataFrame(
+        {
+            "endpoint": ["MA (macro-average)"],
+            "st_rae_mean": [float(_macro_folds["st_rae"].mean())],
+            "st_rae_std": [float(_macro_folds["st_rae"].std())],
+        }
+    )
+    expected_regression = pl.concat(
+        [_per_endpoint.select("endpoint", "st_rae_mean", "st_rae_std"), _macro_row],
+        how="vertical_relaxed",
+    )
+    expected_regression_table = _markdown_table(
+        expected_regression,
+        ["endpoint", "st_rae_mean", "st_rae_std"],
+        ["Endpoint", "Expected ST-RAE (mean)", "std across folds"],
+    )
+    expected_regression
+    return (expected_regression_table,)
+
+
+@app.cell
+def _(C, data, mo, mt_frames, multitask):
+    # One fit on every labelled compound, then predict the 750 blind test rows.
+    # Deliberately not cached: CLAUDE.md warns that a stale final-fit cache can
+    # silently disagree with a retrained CV cache, and one fit is cheap beside 25.
+    _test = data.load_test()
+    mo.output.replace(
+        mo.md(f"Fitting `chemprop_multitask` on all data, predicting {_test.height} "
+              "test compounds. This is a single graph-model fit — expect minutes, "
+              "not the hours a full CV took.")
+    )
+    predictions = multitask.fit_predict_test_multitarget(
+        mt_frames, _test["SMILES"].to_list()
+    )
+    test_frame = _test
+    return predictions, test_frame
+
+
+@app.cell
+def _(C, np, pl, predictions, test_frame):
+    # Sanity-check before writing: predictions must be finite, one per test row, and
+    # in a plausible pIC50 range. A silent NaN here becomes an invalid submission.
+    _rows = []
+    for _e in C.REGRESSION_ENDPOINTS:
+        _v = np.asarray(predictions[_e], dtype=float)
+        _rows.append(
+            {
+                "endpoint": _e.split("_")[0],
+                "n": len(_v),
+                "n_nan": int(np.isnan(_v).sum()),
+                "min": round(float(np.nanmin(_v)), 2),
+                "median": round(float(np.nanmedian(_v)), 2),
+                "max": round(float(np.nanmax(_v)), 2),
+            }
+        )
+    prediction_summary = pl.DataFrame(_rows)
+    assert all(r["n"] == test_frame.height for r in _rows), "wrong prediction count"
+    assert all(r["n_nan"] == 0 for r in _rows), "NaN predictions -- do not submit"
+    prediction_summary
+    return
+
+
+@app.cell
+def _(
+    C,
+    NOTEBOOK_NAME,
+    SUBMIT_METHOD,
+    date,
+    expected_regression_table,
+    n_outer,
+    predictions,
+    submission,
+):
+    # submissions/<notebook>/<date>/ -- ties the file back to the code that made it.
+    out_dir = C.SUBMISSIONS_DIR / NOTEBOOK_NAME / f"{date.today():%Y%m%d}"
+
+    submission_path = submission.build_activity_submission(
+        predictions, out_dir / "activity.csv"
+    )
+    submission_ok = submission.check(submission_path, track="activity")
+
+    (out_dir / "PROVENANCE.md").write_text(
+        f"""# Method-comparison submission — activity track
+
+- Generated: {date.today():%Y-%m-%d}
+- Notebook: `notebooks/{NOTEBOOK_NAME}.py`
+- Data snapshot: `{C.latest_snapshot()}`
+- CV: nested scaffold, {n_outer}x5 folds, shared folds across endpoints
+  (`cv.shared_scaffold_folds`)
+
+## Direct inhibition (regression)
+
+- Model: **{SUBMIT_METHOD}** — one Chemprop D-MPNN with four output heads, trained
+  on all four endpoints at once with missing targets masked in the loss
+- Representation: learned from the molecular graph (no fingerprint, no frozen
+  embedding)
+- Calibration: **none** — see the caveat below
+- Validation: {"PASSED" if submission_ok else "FAILED"}
+
+**Expected performance (5x5 CV, uncalibrated, lower ST-RAE is better;
+1.0 = no better than predicting the mean):**
+
+{expected_regression_table}
+
+Compare the `MA (macro-average)` row against the interim leaderboard's macro ST-RAE
+— that row, not any single endpoint, determines rank.
+
+## Why this model
+
+It won the comparison in `experiments/03_methods/` outright and, unlike PXR's
+finalists, by a margin the CV can resolve: paired bootstrap against
+`tabicl_singletask`, `chemprop_singletask` and `macau_singletask` all give p=0.0000
+with the 95% CI entirely below zero, on 32,625 paired measurements each.
+
+Two findings behind it, both in CLAUDE.md:
+
+1. Representation dominated model choice up to a point — ECFP4 to CheMeleon bought
+   ~0.17 on the macro, while swapping models *on* frozen CheMeleon bought ~0.012.
+2. Multitask helps only when it is real multi-task learning. Row-stacking frozen
+   features gained nothing on strong models and actively hurt TabICL; a shared
+   *learned* encoder with per-endpoint heads gained the most of any model.
+
+## TDI track: not included
+
+This notebook never ran TDI. The multitask mechanism that won here depends on
+compounds carrying several endpoints — 26.7% do for regression, but only **5.4%**
+of TDI compounds appear in both isoforms, so the gain should not be assumed to
+transfer. Notebook 04 runs the equivalent comparison for TDI and ships that track
+once there is a measured number behind it. `submissions/01_baseline/` holds the last
+validated TDI submission (LightGBM, CYP3A4 MCC 0.259 / CYP2D6 0.116) if one is
+needed before then.
+
+## Caveats
+
+**Uncalibrated.** `01_baseline` found linear calibration improved every endpoint
+(e.g. CYP2D6 1.063 to 0.947), so there is likely headroom left. It is deferred
+rather than rushed: calibration must be cross-fit per endpoint and checked against
+the multitask gain, which is its own piece of work.
+
+**CV estimates, not leaderboard guarantees.** The real leaderboard bootstraps the
+actual 750-compound test set; this resamples training-set CV folds, and the
+macro-average matches fold *index* across endpoints rather than resampling the same
+compounds for every endpoint (see `evaluation.macro_averaged_fold_metrics`). Expect
+some difference; a large gap is worth investigating, not shrugging off.
+
+**Cost.** Chemprop is by far the most expensive method here — 2h19m for the
+single-task CV arm — and it degrades across long blocks of consecutive fits on MPS
+(~30s/fold early, ~290s/fold late). See the MPS notes in CLAUDE.md before re-running.
+"""
+    )
+    return submission_ok, submission_path
+
+
+@app.cell
+def _(mo, submission_ok, submission_path):
+    mo.md(
+        f"{'✅' if submission_ok else '🚨'} Activity submission "
+        f"{'validated' if submission_ok else '**FAILED VALIDATION**'}: "
+        f"`{submission_path}`\n\nTDI track intentionally omitted — see "
+        "`PROVENANCE.md` and notebook 04."
+    )
+    return
 
 
 @app.cell
