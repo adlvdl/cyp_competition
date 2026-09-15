@@ -1,0 +1,6 @@
+comparison,p_value,threshold,significant
+aux_screen,0.0,0.01,true
+pubchem,0.0,0.0125,true
+pubchem_frozen,0.0,0.016666666666666666,true
+augmented,0.033,0.025,false
+selection,0.0664,0.05,false

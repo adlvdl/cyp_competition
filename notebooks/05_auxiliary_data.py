@@ -208,8 +208,7 @@ def _(C, cyp_download, external, mo):
 
     mo.output.append(
         mo.md(
-            f"Challenge snapshot `{CHALLENGE_SNAPSHOT}`, "
-            f"external snapshot `{EXTERNAL_SNAPSHOT}`."
+            f"Challenge snapshot `{CHALLENGE_SNAPSHOT}`, external snapshot `{EXTERNAL_SNAPSHOT}`."
         )
     )
     return CHALLENGE_SNAPSHOT, EXTERNAL_SNAPSHOT
@@ -249,13 +248,13 @@ def _(mo, screen_agreement, pl):
     mo.md(
         f"""
     A **single scalar** explains between
-    {100 * _worst['r2_log2fc_only']:.0f}% ({_worst['endpoint'].split('_')[0]}) and
-    {100 * _best['r2_log2fc_only']:.0f}% ({_best['endpoint'].split('_')[0]}) of the
+    {100 * _worst["r2_log2fc_only"]:.0f}% ({_worst["endpoint"].split("_")[0]}) and
+    {100 * _best["r2_log2fc_only"]:.0f}% ({_best["endpoint"].split("_")[0]}) of the
     variance in pIC50. For comparison, the entire modelling effort in `03_methods`
     took the macro ST-RAE from 0.93 to 0.73.
 
     The screen also covers
-    **{screen_agreement['n_screened_unlabelled'].sum():,}** compound/isoform pairs
+    **{screen_agreement["n_screened_unlabelled"].sum():,}** compound/isoform pairs
     that have no dose-response label at all — roughly twice the labelled count. That
     is the coverage A1 and A2 are after.
     """
@@ -357,9 +356,9 @@ def _(C, EXTERNAL_SNAPSHOT, data, external, mo, pl):
     mo.output.append(
         mo.md(
             f"""
-    Structural overlap with the challenge set is small — **{public_overlap['n_shared'].min()}
-    to {public_overlap['n_shared'].max()}** compounds per isoform against
-    {public_overlap['n_public'].min():,}–{public_overlap['n_public'].max():,} public
+    Structural overlap with the challenge set is small — **{public_overlap["n_shared"].min()}
+    to {public_overlap["n_shared"].max()}** compounds per isoform against
+    {public_overlap["n_public"].min():,}–{public_overlap["n_public"].max():,} public
     ones. Small, but removed anyway before pretraining: a public measurement of a
     challenge compound is a different lab's read on the same molecule, and leaving it
     in would let a fold's test label reach the encoder before fine-tuning starts.
@@ -395,9 +394,9 @@ def _(emax, mo):
     mo.md(
         f"""
     **Emax is saturated.** Every value sits within ~0.1 of −1.0, with standard
-    deviations between {emax['std'].min():.3f} and {emax['std'].max():.3f}, and
-    correlations with pIC50 spanning {emax['corr_with_pic50'].min():.2f} to
-    {emax['corr_with_pic50'].max():.2f}. Only CYP2D6 shows anything non-trivial. It
+    deviations between {emax["std"].min():.3f} and {emax["std"].max():.3f}, and
+    correlations with pIC50 spanning {emax["corr_with_pic50"].min():.2f} to
+    {emax["corr_with_pic50"].max():.2f}. Only CYP2D6 shows anything non-trivial. It
     is a readout that pinned at its ceiling, and there is no arm worth spending a
     chemprop run on here.
 
@@ -425,8 +424,8 @@ def _(mo, pl, tdi_shift):
     mo.md(
         f"""
     **The shift alone separates the TDI classes almost perfectly.** Used as a raw
-    score with no model at all, it reaches **AUC {_d6['auc_shift_alone']:.3f}** on
-    CYP2D6 and **{_a4['auc_shift_alone']:.3f}** on CYP3A4. Mechanistically this is
+    score with no model at all, it reaches **AUC {_d6["auc_shift_alone"]:.3f}** on
+    CYP2D6 and **{_a4["auc_shift_alone"]:.3f}** on CYP3A4. Mechanistically this is
     exactly right: a time-dependent inhibitor becomes more potent after preincubation,
     so a positive shift *is* the signature of the thing `is_TDI` labels.
 
@@ -509,9 +508,7 @@ def _(C, auxiliary, data, mo, pl):
                 "endpoint": ENDPOINTS,
                 "real_rows": [frames[e].height for e in ENDPOINTS],
                 "augmented_rows": [augmented_frames[e].height for e in ENDPOINTS],
-                "weak_added": [
-                    augmented_frames[e].height - frames[e].height for e in ENDPOINTS
-                ],
+                "weak_added": [augmented_frames[e].height - frames[e].height for e in ENDPOINTS],
             }
         )
     )
@@ -522,9 +519,9 @@ def _(C, auxiliary, data, mo, pl):
     *and* the effect was not significant at FDR 0.05. That double condition is
     conservative on purpose, and the yield varies sharply: the three weak endpoints
     gain {augmented_frames[ENDPOINTS[0]].height - frames[ENDPOINTS[0]].height:,}
-    ({ENDPOINTS[0].split('_')[0]}) to
+    ({ENDPOINTS[0].split("_")[0]}) to
     {augmented_frames[ENDPOINTS[2]].height - frames[ENDPOINTS[2]].height:,}
-    ({ENDPOINTS[2].split('_')[0]}) rows, while CYP3A4 — the endpoint that already
+    ({ENDPOINTS[2].split("_")[0]}) rows, while CYP3A4 — the endpoint that already
     works — gains almost nothing. That asymmetry says this arm is aimed squarely at
     the weak endpoints.
 
@@ -566,9 +563,7 @@ def _(mo):
 
 @app.cell
 def _(augmented_frames, cv, mo, n_outer, pl):
-    _, assignments = cv.shared_scaffold_folds(
-        augmented_frames, n_outer=n_outer, n_inner=5, seed=42
-    )
+    _, assignments = cv.shared_scaffold_folds(augmented_frames, n_outer=n_outer, n_inner=5, seed=42)
     ALL_FOLDS = sorted(assignments["fold"].unique().to_list())
 
     mo.output.append(
@@ -610,9 +605,7 @@ def _(ENDPOINTS, EXTERNAL_SNAPSHOT, aux_training, data, frames, mo, pl, quick):
         pl.DataFrame(
             {
                 "endpoint": ENDPOINTS,
-                "public_labels": [
-                    int(pretraining[e].is_not_null().sum()) for e in ENDPOINTS
-                ],
+                "public_labels": [int(pretraining[e].is_not_null().sum()) for e in ENDPOINTS],
             }
         )
     )
@@ -684,9 +677,7 @@ def _(
             # to these arms without refitting on the folds they all share.
             return multitask.run_cv_multitarget(frames, **common)
         if arm == "aux_screen":
-            return aux_training.run_cv_auxiliary_heads(
-                frames, method_name="aux_screen", **common
-            )
+            return aux_training.run_cv_auxiliary_heads(frames, method_name="aux_screen", **common)
         if arm == "augmented":
             return aux_training.run_cv_augmented(
                 frames, augmented_frames, method_name="augmented", **common
@@ -971,9 +962,9 @@ def _(mo):
 def _(aux_oof, evaluation, pl):
     bias = pl.concat(
         [
-            evaluation.bias_by_potency_bin(
-                aux_oof.filter(pl.col("method") == method)
-            ).with_columns(pl.lit(method).alias("method"))
+            evaluation.bias_by_potency_bin(aux_oof.filter(pl.col("method") == method)).with_columns(
+                pl.lit(method).alias("method")
+            )
             for method in sorted(aux_oof["method"].unique().to_list())
         ]
     )
@@ -1002,20 +993,14 @@ def _(aux_oof, calibration, evaluation, pl):
     for _method in sorted(aux_oof["method"].unique().to_list()):
         _sub = aux_oof.filter(pl.col("method") == _method)
         for _kind in ("none", "linear", "isotonic"):
-            _frame = (
-                _sub
-                if _kind == "none"
-                else calibration.crossfit_calibrate(_sub, kind=_kind)
-            )
+            _frame = _sub if _kind == "none" else calibration.crossfit_calibrate(_sub, kind=_kind)
             _macro = (
                 evaluation.fold_metrics(_frame)
                 .group_by("endpoint")
                 .agg(pl.col("st_rae").mean())["st_rae"]
                 .mean()
             )
-            _rows.append(
-                {"method": _method, "calibration": _kind, "macro_st_rae": _macro}
-            )
+            _rows.append({"method": _method, "calibration": _kind, "macro_st_rae": _macro})
 
     calibration_table = (
         pl.DataFrame(_rows)
@@ -1072,27 +1057,287 @@ def _(mo):
         r"""
     ## Reading the result
 
-    *Filled in after the run, from the tables above.*
+    Full 5x5 run, 25 folds, 150 fold-major units. The bar is the paired bootstrap
+    surviving Holm correction, not the point estimate — PXR's five lost places came
+    from ranking on differences the CV could not resolve.
 
-    The decision this notebook feeds is whether any auxiliary source earns a place in
-    a submission. The bar is not "the point estimate improved" — it is the paired
-    bootstrap surviving Holm correction, since PXR's five lost places came from
-    ranking on differences the CV could not resolve.
+    | arm | macro ST-RAE | vs reference | Holm-significant |
+    |:--|--:|:--|:--|
+    | **pubchem** | **0.716** | −0.013, p<0.0001 | **yes** |
+    | aux_screen | 0.721 | −0.009, p<0.0001 | **yes** |
+    | augmented | 0.724 | −0.005, p=0.033 | no (Holm threshold 0.025) |
+    | chemprop_multitask (reference) | 0.730 | — | — |
+    | selection | 0.733 | +0.002, p=0.066 | no |
+    | pubchem_frozen | 0.752 | +0.025, p<0.0001 | yes, **worse** |
+
+    **pubchem wins, cleanly.** It is the only arm that is both the best point
+    estimate and Holm-significant, and it wins broadly — best or tied-best on every
+    one of the four endpoints, not concentrated on one. This is the arm PXR's prior
+    would have predicted *against*: "auxiliary-assay data hurt in PXR despite
+    helping top teams." Here it is the strongest result in the sweep.
+
+    **Freezing the encoder erases the gain and reverses it** (pubchem_frozen: +0.025,
+    significantly worse than not pretraining at all). The model needs to adapt to
+    the challenge's own assay protocol, not just borrow a frozen public-data
+    representation — confirming the mechanism is genuine transfer learning, not
+    feature reuse.
+
+    **aux_screen is a solid second, with no public-data dependency at all.** −0.009,
+    Holm-significant, using only data the challenge already shipped. If a submission
+    needs to avoid an external dependency, this is the arm.
+
+    **augmented shows a real but unresolved effect.** The point estimate moved
+    consistently between the 10-fold preview and the full run (−0.006 → −0.005), and
+    its raw p-value improved (0.058 → 0.033) — but Holm's threshold for its rank in
+    the comparison family (0.025) is still tighter. Worth revisiting with a larger
+    weak-label yield rather than concluding it does nothing.
+
+    **selection shows no effect**, including on CYP2D6, the endpoint its hypothesis
+    specifically targeted. Of all six arms it is the *worst* on CYP2D6 (0.937). The
+    triage truncation is real (see above), but per-compound inverse-propensity
+    weighting on a shared encoder was not the fix for it.
+
+    **Calibration changes nothing here.** Every arm's `none`/`linear`/`isotonic`
+    columns agree to six decimal places — these multi-head Chemprop models are
+    already well-calibrated on their own output scale, unlike `01_baseline`'s
+    fingerprint models where linear calibration helped broadly.
 
     ## Submission
 
-    **Deliberately not written yet.** Following 03 and 04, the submission section is
-    added after the numbers exist and the choice is made from them rather than
-    written speculatively alongside the run. `03_methods` shipped on its result and
-    `04_methods_tdi` declined to, both correctly.
-
-    When it is added it gets `submissions/05_auxiliary_data/<date>/` with a
-    `PROVENANCE.md` recording model, calibration, CV protocol, **both** data
-    snapshots (challenge and external — this is the first notebook where those are
-    two different things), and an expected-performance table computed fresh from CV
-    for the exact submitted method and calibration.
+    Shipping **pubchem**: encoder pretrained on the PubChem qHTS panel (public data,
+    challenge structures excluded), fine-tuned on the four challenge endpoints with
+    masked multi-target heads, same architecture as 03's winner in every other
+    respect. It beats `chemprop_multitask` by a margin this CV can resolve, which is
+    the bar CLAUDE.md sets after PXR's costliest mistake.
     """
     )
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(
+        r"""
+    ### Final fit and blind-set prediction
+
+    One fit on every labelled compound, warm-started from the same pretraining
+    checkpoint the CV arm used — not refitted, since the checkpoint has already been
+    validated as leak-free (challenge structures excluded from the public corpus)
+    and refitting it would only add cost, not honesty. Deliberately not cached:
+    CLAUDE.md's rule is to cache CV and never the final fit, since a stale final-fit
+    cache can silently disagree with a retrained CV cache.
+    """
+    )
+    return
+
+
+@app.cell
+def _(C, data, frames, mo, multitask, pretrain_epochs):
+    # Same checkpoint directory `aux_training.run_cv_pretrained` used during CV for
+    # the "pubchem" arm (see its docstring) -- referencing that exact path, rather
+    # than re-deriving it, is what makes this the same checkpoint the CV result was
+    # measured on.
+    _pretrain_dir = C.PROJECT_ROOT / ".chemprop_pretrain" / "pubchem"
+    if not (_pretrain_dir / "model_0" / "best.pt").exists():
+        raise FileNotFoundError(
+            f"{_pretrain_dir} has no checkpoint -- the CV cells above must run first "
+            "so the 'pubchem' arm's pretraining actually happens."
+        )
+
+    _test = data.load_test()
+    mo.output.replace(
+        mo.md(
+            f"Fitting `pubchem` on all data, predicting {_test.height} test "
+            "compounds, warm-started from the PubChem checkpoint."
+        )
+    )
+
+    test_predictions = multitask.fit_predict_test_multitarget(
+        frames,
+        _test["SMILES"].to_list(),
+        pretrain_dir=_pretrain_dir,
+        pretrain_epochs=pretrain_epochs,
+    )
+    test_frame = _test
+    return test_frame, test_predictions
+
+
+@app.cell
+def _(C, np, pl, test_frame, test_predictions):
+    # Sanity-check before writing: predictions must be finite, one per test row, and
+    # in a plausible pIC50 range. A silent NaN here becomes an invalid submission.
+    _rows = []
+    for _e in C.REGRESSION_ENDPOINTS:
+        _v = np.asarray(test_predictions[_e], dtype=float)
+        _rows.append(
+            {
+                "endpoint": _e.split("_")[0],
+                "n": len(_v),
+                "n_nan": int(np.isnan(_v).sum()),
+                "min": round(float(np.nanmin(_v)), 2),
+                "median": round(float(np.nanmedian(_v)), 2),
+                "max": round(float(np.nanmax(_v)), 2),
+            }
+        )
+    prediction_summary = pl.DataFrame(_rows)
+    assert all(r["n"] == test_frame.height for r in _rows), "wrong prediction count"
+    assert all(r["n_nan"] == 0 for r in _rows), "NaN predictions -- do not submit"
+    prediction_summary
+    return
+
+
+@app.cell
+def _(
+    CHALLENGE_SNAPSHOT,
+    EXTERNAL_SNAPSHOT,
+    C,
+    NOTEBOOK_NAME,
+    bootstrap_table,
+    date,
+    macro_table,
+    n_outer,
+    per_endpoint,
+    pl,
+    submission,
+    test_predictions,
+):
+    def _markdown_table(frame, cols, headers) -> str:
+        lines = [
+            "| " + " | ".join(headers) + " |",
+            "|" + "|".join([":--"] + ["--:"] * (len(cols) - 1)) + "|",
+        ]
+        for row in frame.select(cols).iter_rows():
+            cells = [f"{v:.4f}" if isinstance(v, float) else str(v) for v in row]
+            lines.append("| " + " | ".join(cells) + " |")
+        return "\n".join(lines)
+
+    _expected_table = _markdown_table(
+        macro_table.sort("macro_st_rae"),
+        ["method", "macro_st_rae", "std", "n_folds"],
+        ["Method", "Macro ST-RAE", "std", "n folds"],
+    )
+    _per_endpoint_cols = [c for c in per_endpoint.columns if c != "method"]
+    _per_endpoint_table = _markdown_table(
+        per_endpoint,
+        ["method", *_per_endpoint_cols],
+        ["Method", *[c.split("_")[0] for c in _per_endpoint_cols]],
+    )
+    _bootstrap_row = bootstrap_table.filter(pl.col("arm") == "pubchem").row(0, named=True)
+
+    out_dir = C.SUBMISSIONS_DIR / NOTEBOOK_NAME / f"{date.today():%Y%m%d}"
+
+    submission_path = submission.build_activity_submission(
+        test_predictions, out_dir / "activity.csv"
+    )
+    submission_ok = submission.check(submission_path, track="activity")
+
+    (out_dir / "PROVENANCE.md").write_text(
+        f"""# Auxiliary and public data submission — activity track
+
+- Generated: {date.today():%Y-%m-%d}
+- Notebook: `notebooks/{NOTEBOOK_NAME}.py`
+- Challenge data snapshot: `{CHALLENGE_SNAPSHOT}`
+- External data snapshot: `{EXTERNAL_SNAPSHOT}` (PubChem qHTS panel, AIDs 410/883/884/891)
+- CV: nested scaffold, {n_outer}x5 folds, shared folds across endpoints and arms
+  (`cv.shared_scaffold_folds` over the augmented-frame union)
+
+## Direct inhibition (regression)
+
+- Model: **pubchem** — one Chemprop D-MPNN with four output heads, encoder
+  pretrained on the PubChem qHTS panel (public CYP inhibition data, challenge
+  structures excluded by standardised-SMILES match), then fine-tuned on all four
+  challenge endpoints with missing targets masked in the loss
+- Representation: learned from the molecular graph, warm-started from a public-data
+  checkpoint rather than trained from scratch (03's `chemprop_multitask`) or a
+  frozen fingerprint/embedding
+- Calibration: **none** — checked and found to make no difference (see below)
+- Validation: {"PASSED" if submission_ok else "FAILED -- DO NOT SUBMIT"}
+
+**Expected performance (5x5 CV, macro ST-RAE, lower is better;
+1.0 = no better than predicting the mean):**
+
+{_expected_table}
+
+**pubchem vs the 03 winner (chemprop_multitask), paired bootstrap on 25 shared folds:**
+diff {_bootstrap_row["diff"]:.4f},
+95% CI [{_bootstrap_row["ci_low"]:.4f}, {_bootstrap_row["ci_high"]:.4f}],
+p={_bootstrap_row["p_value"]:.4f}.
+This is the margin the CV can resolve, not just the point estimate.
+
+## Why this model
+
+Six arms were compared against `chemprop_multitask` on identical folds, all one
+Chemprop D-MPNN with four masked heads so a difference is attributable to the
+training data rather than the architecture. `pubchem` was the only arm that was
+both the best point estimate and Holm-significant across the family of five
+comparisons, and it won broadly rather than on one endpoint:
+
+{_per_endpoint_table}
+
+Two findings behind it, both new in this notebook:
+
+1. **Public data helps here**, reversing PXR's finding that auxiliary-assay data
+   hurt there. The mechanism is real transfer learning, not feature reuse --
+   freezing the pretrained encoder during fine-tuning (`pubchem_frozen`) erased the
+   gain and made the result significantly *worse* than no pretraining at all
+   (+0.025, p<0.0001), so the model needs to adapt to the challenge's assay
+   protocol rather than just inherit public-data features.
+2. **The single-concentration screen also helps** (`aux_screen`, −0.009,
+   Holm-significant) as an auxiliary Chemprop target, with no external dependency.
+   It was not shipped here only because `pubchem`'s margin is larger, not because it
+   failed -- worth a second look if the public-data dependency is undesirable for a
+   future submission.
+
+## What did not survive Holm correction
+
+`augmented` (screen negatives as censored weak labels) showed a consistent but
+unresolved effect (p=0.033 against a 0.025 threshold at its rank) -- plausible with
+more weak-label yield, not concluded to be nothing. `selection` (inverse-propensity
+correction for the screen-to-curve triage) showed no effect anywhere, including on
+CYP2D6, the endpoint its hypothesis specifically targeted -- it is in fact the worst
+arm on CYP2D6 of the six tested. The triage truncation described in this notebook's
+early sections is real; this particular correction for it did not work.
+
+## TDI track: not included
+
+This notebook only ran the regression track. Notebook 04 established that
+multitask does not transfer to TDI (5.4% co-measurement against 26.7% for
+regression), and none of this notebook's four data sources naturally extend to a
+classification target without their own dedicated measurement. The
+`tdi_shift_summary` side section above found the TDI/direct pIC50 shift reaching
+AUC 0.96 unaided on CYP2D6 -- a strong lead for a future notebook, not something
+this run measured a model against.
+
+## Caveats
+
+**CV estimates, not leaderboard guarantees.** The real leaderboard bootstraps the
+actual 750-compound test set; this resamples training-set CV folds, and the
+macro-average matches fold index across endpoints rather than resampling the same
+compounds for every endpoint. A large gap between this table and the interim reveal
+is worth investigating, not shrugging off.
+
+**The pretraining checkpoint is fit once, not per fold, and reused for the final
+model.** This is legitimate because the public corpus contains no challenge label
+(structural overlap removed), so no compound's test label ever reached the encoder
+through it -- but it does mean the checkpoint was not re-validated against the
+final all-data fit's exact training set. A future run wanting to be maximally
+careful could re-pretrain once more against the exact final training compounds;
+the cost is one more pretraining run, cheap next to the CV that already ran.
+
+**Public data quality.** The PubChem qHTS panel is a single uniform protocol,
+deliberately chosen over ChEMBL's much larger but heterogeneous pool -- but it is
+still a different lab, different conditions, and a different concentration-response
+range than the challenge's own assay. The gain measured here is real on this CV;
+whether it holds at the same magnitude on the blind set is exactly what the interim
+reveal will show.
+"""
+    )
+
+    submission_summary = {
+        "path": str(submission_path),
+        "valid": submission_ok,
+    }
+    submission_summary
     return
 
 
