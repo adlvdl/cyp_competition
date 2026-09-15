@@ -335,3 +335,67 @@ def test_public_potencies_are_inhibition_only():
         assert with_potency["is_inhibitor"].all(), isoform
         # Inactives are kept as rows but never carry a fitted potency.
         assert frame.filter(pl.col("is_inactive"))["pIC50"].is_null().all(), isoform
+
+
+# ---------------------------------------------------------------------------
+# Fold-major execution
+# ---------------------------------------------------------------------------
+
+
+def test_multitarget_folds_argument_fits_only_the_requested_fold(monkeypatch):
+    """`run_cv_multitarget` must fit one fold when asked for one fold.
+
+    Without a `folds` argument a caller wanting a single fold has to run all 25 and
+    discard 24. That is a 25x waste which is easy to introduce by accident and slow
+    to spot, because the run looks perfectly healthy while producing nothing --
+    exactly what happened on this notebook's first full launch. The count of fits is
+    asserted directly rather than the shape of the output, since a filtered
+    all-folds run would pass a shape check while doing all the work.
+    """
+    from cyp import cv, graph_models, multitask
+
+    frames = {
+        "e1": pl.DataFrame(
+            {
+                "Molecule_Name": [f"m{i}" for i in range(12)],
+                "SMILES": [
+                    "c1ccccc1CCO",
+                    "c1ccncc1CC",
+                    "C1CCCCC1CO",
+                    "c1ccc2ccccc2c1C",
+                    "c1cc(F)ccc1CN",
+                    "C1CCNCC1CC",
+                    "c1ccsc1CCC",
+                    "c1ccoc1CN",
+                    "C1CCOC1CCO",
+                    "c1cnc2ccccc2c1",
+                    "C1CN(C)CCN1C",
+                    "c1ccc(Cl)cc1CO",
+                ],
+                "y_true": [5.0 + 0.1 * i for i in range(12)],
+                "y_lower": [4.8 + 0.1 * i for i in range(12)],
+                "y_upper": [5.2 + 0.1 * i for i in range(12)],
+            }
+        )
+    }
+    _, table = cv.shared_scaffold_folds(frames, n_outer=1, n_inner=2)
+
+    fits: list[int] = []
+
+    class _StubModel:
+        def __init__(self, targets, **kwargs):
+            self.targets = list(targets)
+
+        def fit(self, smiles, y, **kwargs):
+            fits.append(len(smiles))
+            return self
+
+        def predict(self, smiles):
+            return np.zeros((len(smiles), len(self.targets)))
+
+    monkeypatch.setattr(graph_models, "ChempropMultitargetModel", _StubModel)
+
+    oof = multitask.run_cv_multitarget(frames, assignments=table, folds=[1])
+
+    assert len(fits) == 1, f"expected one fit for one fold, got {len(fits)}"
+    assert oof["fold"].unique().to_list() == [1]

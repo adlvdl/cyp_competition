@@ -682,9 +682,7 @@ def _(
             # The 03 winner, re-run here rather than quoted: its 0.7280 came from a
             # different fold assignment (real labels only), so it is not comparable
             # to these arms without refitting on the folds they all share.
-            return multitask.run_cv_multitarget(
-                frames, assignments=assignments, epochs=chemprop_epochs
-            ).filter(pl.col("fold") == fold)
+            return multitask.run_cv_multitarget(frames, **common)
         if arm == "aux_screen":
             return aux_training.run_cv_auxiliary_heads(
                 frames, method_name="aux_screen", **common

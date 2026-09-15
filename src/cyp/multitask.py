@@ -366,6 +366,7 @@ def run_cv_multitarget(
     seed: int = 42,
     p_val: float = 0.1,
     assignments: pl.DataFrame | None = None,
+    folds: list[int] | None = None,
     on_fold=None,
     **chemprop_kwargs,
 ) -> pl.DataFrame:
@@ -386,6 +387,12 @@ def run_cv_multitarget(
         seed: Split seed.
         p_val: Validation fraction per training fold, for early stopping.
         assignments: Fold table from `shared_scaffold_folds`.
+        folds: Run only these fold indices, leaving the rest unfitted. A fold-major
+            notebook passes one at a time so an interrupted sweep leaves every
+            method complete through the same fold. Without this a caller wanting a
+            single fold has to fit all 25 and discard 24 -- a 25x waste that is easy
+            to introduce by accident and slow to notice, since the run looks healthy
+            while producing nothing.
         on_fold: Optional `(fold, n_folds) -> None` progress callback. Chemprop is
             the slowest method here (~90s per fold at 50 epochs), so this is the
             harness that most needs one.
@@ -424,6 +431,9 @@ def run_cv_multitarget(
     for fold, outer, inner, train_long, _val, test_long in fold_assignment_splits(
         stacked, assignments
     ):
+        if folds is not None and fold not in folds:
+            continue
+
         train_names = set(train_long["Molecule_Name"].to_list())
         train_wide = wide.filter(pl.col("Molecule_Name").is_in(train_names))
 
