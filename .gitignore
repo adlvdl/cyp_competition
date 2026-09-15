@@ -242,3 +242,8 @@ experiments/**/cache/*_quick.*
 *.sqlite
 .ipynb_checkpoints/
 .DS_Store
+
+# Chemprop pretraining checkpoints (aux_training.run_cv_pretrained). Regenerated
+# from the committed external snapshot in one pretraining run; a torch checkpoint is
+# large and is not a derived summary anyone reads.
+.chemprop_pretrain/

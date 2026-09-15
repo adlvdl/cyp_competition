@@ -1,9 +1,11 @@
-.PHONY: help setup data data-diff lab test lint baseline check-activity check-tdi
+.PHONY: help setup data data-diff external-data external-diff lab test lint baseline check-activity check-tdi
 
 help:
 	@echo "setup          uv sync (creates .venv with all deps)"
 	@echo "data           download challenge CSVs into a dated data/raw/YYYYMMDD/ snapshot"
 	@echo "data-diff      compare the two most recent snapshots (no download)"
+	@echo "external-data  download the PubChem qHTS panel into data/external/YYYYMMDD/"
+	@echo "external-diff  compare the two most recent external snapshots (no download)"
 	@echo "lab            launch marimo"
 	@echo "baseline       run notebooks/01_baseline.py as a script"
 	@echo "test           run pytest"
@@ -19,6 +21,12 @@ data:
 
 data-diff:
 	uv run python -m cyp.download --compare-only
+
+external-data:
+	uv run python -m cyp.external
+
+external-diff:
+	uv run python -m cyp.external --compare-only
 
 lab:
 	uv run marimo edit notebooks

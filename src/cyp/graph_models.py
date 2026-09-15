@@ -611,19 +611,77 @@ class ChempropMultitargetModel(ChempropModel):
             args += ["--from-foundation", self.from_foundation]
         return args
 
-    def _write_wide_csv(self, smiles: list[str], y: np.ndarray, path: Path) -> None:
+    def _write_wide_csv(
+        self,
+        smiles: list[str],
+        y: np.ndarray,
+        path: Path,
+        sample_weight: np.ndarray | None = None,
+    ) -> None:
         """Write a multi-target CSV, leaving unmeasured cells empty.
 
-        Empty is deliberate and load-bearing: Chemprop reads a blank cell as "no
-        label" and masks it out of the loss, whereas a 0.0 would be read as a real
-        measurement of an extremely inactive compound and would poison the head.
+        The empty cell is the point: Chemprop reads a blank as "no label" and masks
+        it out of the loss, whereas a 0.0 would be read as a real measurement of an
+        extremely inactive compound and would poison the head.
         """
         columns: dict[str, list] = {"smiles": list(smiles)}
         y = np.asarray(y, dtype=float)
         for i, target in enumerate(self.targets):
             column = y[:, i]
             columns[target] = [None if np.isnan(v) else float(v) for v in column]
+        if sample_weight is not None:
+            columns["weight"] = np.asarray(sample_weight, dtype=float).flatten().tolist()
         pl.DataFrame(columns).write_csv(path)
+
+    def pretrain_wide(
+        self,
+        smiles_train: list[str],
+        y_train: np.ndarray,
+        smiles_val: list[str],
+        y_val: np.ndarray,
+    ) -> ChempropMultitargetModel:
+        """Pretrain on an auxiliary multi-target matrix, keeping the same head shape.
+
+        The inherited `pretrain` writes a single-target CSV, which cannot warm-start a
+        four-head model: chemprop would build a one-output FFN and the checkpoint
+        would not load into the fine-tuning architecture. This writes the same wide
+        format `fit` uses, so the pretrained encoder *and* head transfer.
+
+        Call once before the CV loop. `pretrain_dir` survives between folds, so every
+        fold fine-tunes from the same encoder -- and because the auxiliary data is
+        external to the challenge, the same checkpoint is legitimately reusable across
+        folds without leaking a fold's own labels.
+        """
+        y_train = np.asarray(y_train, dtype=float)
+        y_val = np.asarray(y_val, dtype=float)
+        if y_train.ndim != 2 or y_train.shape[1] != len(self.targets):
+            raise ValueError(f"y_train must be (n, {len(self.targets)}), got {y_train.shape}")
+
+        tmp = Path(tempfile.gettempdir())
+        train_csv, val_csv = tmp / "cyp_cp_mt_pre_train.csv", tmp / "cyp_cp_mt_pre_val.csv"
+        self._write_wide_csv(list(smiles_train), y_train, train_csv)
+        self._write_wide_csv(list(smiles_val), y_val, val_csv)
+
+        if self.pretrain_dir.exists():
+            shutil.rmtree(self.pretrain_dir)
+
+        _run_chemprop_cli(
+            [
+                "train",
+                "--data-path",
+                str(train_csv),
+                str(val_csv),
+                str(val_csv),
+                *self._base_train_args("ignored"),
+                "--epochs",
+                str(self.pretrain_epochs),
+                "--save-dir",
+                str(self.pretrain_dir),
+            ]
+        )
+        train_csv.unlink(missing_ok=True)
+        val_csv.unlink(missing_ok=True)
+        return self
 
     def fit(
         self,
@@ -636,21 +694,26 @@ class ChempropMultitargetModel(ChempropModel):
     ) -> ChempropMultitargetModel:
         """Train on a `(n_compounds, n_targets)` matrix with NaN for unmeasured.
 
-        `sample_weight` is not supported here: Chemprop's `-w` weights a datapoint,
-        not a (datapoint, target) pair, so it cannot express per-endpoint weighting
-        and would silently mean something different from the single-task case.
+        `sample_weight` weights a *compound*, not a (compound, endpoint) pair, because
+        that is the only thing Chemprop's `-w` can express. A compound measured for
+        three isoforms therefore carries one weight covering all three. Per-endpoint
+        weighting is not available here at all, so a caller that needs it has to fall
+        back to single-task models -- see `aux_training.run_cv_selection_corrected`,
+        which averages its per-endpoint propensities for exactly this reason.
         """
-        if sample_weight is not None:
-            raise ValueError(
-                "sample_weight is not supported for multi-target training: chemprop "
-                "weights datapoints, not (datapoint, target) pairs."
-            )
-
         y_train = np.asarray(y_train, dtype=float)
         if y_train.ndim != 2 or y_train.shape[1] != len(self.targets):
             raise ValueError(f"y_train must be (n, {len(self.targets)}), got {y_train.shape}")
 
         smiles_train = list(smiles_train)
+        if sample_weight is not None:
+            sample_weight = np.asarray(sample_weight, dtype=float).flatten()
+            if len(sample_weight) != len(smiles_train):
+                raise ValueError(
+                    f"sample_weight must have one entry per compound: got "
+                    f"{len(sample_weight)} for {len(smiles_train)} compounds"
+                )
+
         if smiles_val is None or y_val is None:
             rng = np.random.default_rng(42)
             idx = rng.permutation(len(smiles_train))
@@ -660,29 +723,45 @@ class ChempropMultitargetModel(ChempropModel):
             y_val = y_train[val_idx]
             smiles_train = [smiles_train[i] for i in train_idx]
             y_train = y_train[train_idx]
+            if sample_weight is not None:
+                sample_weight = sample_weight[train_idx]
 
         tmp = Path(tempfile.gettempdir())
         train_csv, val_csv = tmp / "cyp_cp_mt_train.csv", tmp / "cyp_cp_mt_val.csv"
-        self._write_wide_csv(smiles_train, y_train, train_csv)
-        self._write_wide_csv(smiles_val, np.asarray(y_val, dtype=float), val_csv)
+        # Chemprop needs the weight column in every split once it is used at all, so
+        # the validation rows get a uniform 1.0 -- early stopping should measure fit
+        # quality, not the reweighting.
+        val_weight = None if sample_weight is None else np.ones(len(smiles_val))
+        self._write_wide_csv(smiles_train, y_train, train_csv, sample_weight)
+        self._write_wide_csv(smiles_val, np.asarray(y_val, dtype=float), val_csv, val_weight)
 
         if self.model_dir.exists():
             shutil.rmtree(self.model_dir)
 
-        _run_chemprop_cli(
-            [
-                "train",
-                "--data-path",
-                str(train_csv),
-                str(val_csv),
-                str(val_csv),
-                *self._base_train_args(target_col),
-                "--epochs",
-                str(self.epochs),
-                "--save-dir",
-                str(self.model_dir),
-            ]
-        )
+        args = [
+            "train",
+            "--data-path",
+            str(train_csv),
+            str(val_csv),
+            str(val_csv),
+            *self._base_train_args(target_col),
+            "--epochs",
+            str(self.epochs),
+            "--save-dir",
+            str(self.model_dir),
+        ]
+        if sample_weight is not None:
+            args += ["-w", "weight"]
+
+        # Same precedence rule as the single-target `fit`: our own auxiliary
+        # checkpoint outranks the generic foundation backbone when both exist.
+        pretrain_ckpt = self.pretrain_dir / "model_0" / "best.pt"
+        if pretrain_ckpt.exists():
+            args += ["--checkpoint", str(pretrain_ckpt)]
+            if self.freeze_encoder:
+                args.append("--freeze-encoder")
+
+        _run_chemprop_cli(args)
         train_csv.unlink(missing_ok=True)
         val_csv.unlink(missing_ok=True)
         return self
