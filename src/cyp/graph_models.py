@@ -77,10 +77,32 @@ def device() -> str:
     check, but `import torch` in this process would make every later LightGBM fit
     segfault (module docstring), and this function runs on every Chemprop fit.
     Falls back to "cpu" if detection fails -- a slow run beats a crashed one.
+
+    ## Overriding with CYP_CHEMPROP_DEVICE
+
+    Set `CYP_CHEMPROP_DEVICE=cpu` to force the accelerator. This exists because MPS
+    degrades badly across a long block of Chemprop fits on this machine, and it does
+    so *progressively then permanently*: measured on the 04 TDI run (2026-09-14/15),
+    `chemprop_singletask` went 100s, 91s, 97s per fold for three folds, then rose to
+    1109s and 1791s and plateaued around 2000s for every fold after -- a ~20x
+    penalty that never recovered. `chemprop_multitask` showed the same shape. Other
+    methods in the same interleaved run (LightGBM, XGBoost, TabICL) stayed flat
+    throughout, so this is specific to the sustained MPS workload rather than
+    machine-wide contention.
+
+    Interleaving methods within a fold did not prevent it, which rules out the
+    simplest mitigation. Forcing CPU trades a higher fixed per-fit cost for a rate
+    that does not drift, which is the better deal over 25 folds.
     """
     global _DEVICE
     if _DEVICE is not None:
         return _DEVICE
+
+    override = os.environ.get("CYP_CHEMPROP_DEVICE", "").strip()
+    if override:
+        _DEVICE = override
+        return _DEVICE
+
     try:
         result = subprocess.run(
             [sys.executable, "-c", _DEVICE_SCRIPT],

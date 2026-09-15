@@ -321,7 +321,7 @@ def _require_tabpfn_token() -> None:
         "  1. Register and log in at https://ux.priorlabs.ai\n"
         "  2. Accept the licence on the Licenses tab\n"
         "  3. Copy the API key from https://ux.priorlabs.ai/account\n"
-        "  4. export TABPFN_TOKEN=\"<your-api-key>\" (or put it in .env)\n"
+        '  4. export TABPFN_TOKEN="<your-api-key>" (or put it in .env)\n'
         "     It must be the API key (tabpfn_sk_...), not a browser session token.\n"
         "TabICL (`tabicl` method) needs no token and is the Apache-2.0 alternative."
     )
@@ -677,25 +677,71 @@ X_train = np.load(payload["x_train"])
 y_train = np.load(payload["y_train"])
 X_test = np.load(payload["x_test"])
 kind = payload["kind"]
+task = payload["task"]
 n_estimators = payload["n_estimators"]
 device = payload["device"]
 alpha = payload["alpha"]
 lower = upper = None
 
-if kind == "tabicl":
+
+def _reduce(X_train, X_test, max_features, seed):
+    # PCA both matrices onto a shared basis fitted on the training rows only.
+    # Fitting inside the child (and inside the fold) is what keeps the projection
+    # from ever seeing held-out rows.
     from sklearn.decomposition import PCA
+
+    if X_train.shape[1] <= max_features:
+        return X_train, X_test
+    pca = PCA(n_components=min(max_features, *X_train.shape), random_state=seed)
+    return (
+        pca.fit_transform(X_train).astype("float32"),
+        pca.transform(X_test).astype("float32"),
+    )
+
+
+if task == "classification":
+    # The TDI track. `preds` carries positive-class *probabilities*, not labels:
+    # TDI is ~21% positive and MCC is not optimized at a 0.5 cutoff, so the
+    # threshold has to be tuned by the caller against OOF predictions. Returning
+    # hard labels here would throw away exactly the information that tuning needs.
+    cap = payload["tabicl_max_features"] if kind == "tabicl" else payload["max_features"]
+    X_train, X_test = _reduce(X_train, X_test, cap, payload["seed"])
+    y_train = y_train.astype(int)
+
+    if kind == "tabicl":
+        from tabicl import TabICLClassifier
+
+        model = TabICLClassifier(
+            n_estimators=n_estimators, device=device, random_state=payload["seed"]
+        )
+    elif kind == "tabpfn":
+        from tabpfn import TabPFNClassifier
+
+        model = TabPFNClassifier(
+            n_estimators=n_estimators,
+            device=device,
+            random_state=payload["seed"],
+            ignore_pretraining_limits=True,
+        )
+    else:
+        raise ValueError(f"Unknown kind: {kind}")
+
+    model.fit(X_train, y_train)
+    proba = np.asarray(model.predict_proba(X_test), dtype=float)
+    # A fold whose training rows are all one class leaves predict_proba with a
+    # single column; the positive-class probability is then 0 or 1 throughout.
+    preds = proba[:, 1] if proba.ndim == 2 and proba.shape[1] > 1 else np.full(
+        len(X_test), float(y_train[0]) if len(y_train) else 0.0
+    )
+elif kind == "tabicl":
     from tabicl import TabICLRegressor
 
     # Memory cap, not a model cap: TabICL attends over the feature axis and needs
     # roughly 20 MB per feature, so an unreduced 2048-dim embedding would swap the
     # machine rather than raise. See TABICL_MAX_FEATURES in the parent module.
-    max_features = payload["tabicl_max_features"]
-    if X_train.shape[1] > max_features:
-        pca = PCA(
-            n_components=min(max_features, *X_train.shape), random_state=payload["seed"]
-        )
-        X_train = pca.fit_transform(X_train).astype("float32")
-        X_test = pca.transform(X_test).astype("float32")
+    X_train, X_test = _reduce(
+        X_train, X_test, payload["tabicl_max_features"], payload["seed"]
+    )
 
     model = TabICLRegressor(
         n_estimators=n_estimators, device=device, random_state=payload["seed"]
@@ -709,16 +755,9 @@ if kind == "tabicl":
         )
         lower, upper = q[:, 0].flatten(), q[:, 1].flatten()
 elif kind == "tabpfn":
-    from sklearn.decomposition import PCA
     from tabpfn import TabPFNRegressor
 
-    max_features = payload["max_features"]
-    if X_train.shape[1] > max_features:
-        pca = PCA(
-            n_components=min(max_features, *X_train.shape), random_state=payload["seed"]
-        )
-        X_train = pca.fit_transform(X_train)
-        X_test = pca.transform(X_test)
+    X_train, X_test = _reduce(X_train, X_test, payload["max_features"], payload["seed"])
     model = TabPFNRegressor(
         n_estimators=n_estimators,
         device=device,
@@ -746,6 +785,7 @@ def predict_subprocess(
     y_train: np.ndarray,
     X_test: np.ndarray,
     kind: str = "tabicl",
+    task: str = "regression",
     n_estimators: int | None = None,
     device: str = "cpu",
     seed: int = 42,
@@ -767,6 +807,11 @@ def predict_subprocess(
         y_train: Training targets.
         X_test: Test features.
         kind: "tabicl" or "tabpfn".
+        task: "regression" (direct inhibition) or "classification" (TDI). The
+            classification path returns positive-class *probabilities* in the first
+            slot rather than labels, because MCC is not optimized at a 0.5 cutoff on
+            a ~21%-positive label -- the caller thresholds them against OOF data.
+            `want_interval` is regression-only and is ignored here.
         n_estimators: Ensemble members. None picks the kind's default -- deliberately
             low for TabICL, where 8 costs ~11 GB at our largest endpoint.
         device: "cpu", "mps" or "cuda".
@@ -780,16 +825,22 @@ def predict_subprocess(
 
     Returns:
         `(predictions, lower, upper)`; `lower`/`upper` are None unless
-        `want_interval` is set.
+        `want_interval` is set. Under `task="classification"`, `predictions` are
+        positive-class probabilities.
     """
     if kind not in ("tabicl", "tabpfn"):
         raise ValueError(f"kind must be 'tabicl' or 'tabpfn', not {kind!r}")
+    if task not in ("regression", "classification"):
+        raise ValueError(f"task must be 'regression' or 'classification', not {task!r}")
+    if task == "classification" and want_interval:
+        raise ValueError(
+            "want_interval is a regression feature; a classifier returns "
+            "probabilities, which are already the uncertainty."
+        )
     if kind == "tabpfn":
         _require_tabpfn_token()
     if n_estimators is None:
-        n_estimators = (
-            TABICL_N_ESTIMATORS if kind == "tabicl" else TABPFN_N_ESTIMATORS
-        )
+        n_estimators = TABICL_N_ESTIMATORS if kind == "tabicl" else TABPFN_N_ESTIMATORS
     # Check before spawning. For TabICL especially, the child would swap the machine
     # and a frozen desktop reports nothing back to this process.
     effective_features = (
@@ -815,6 +866,8 @@ def predict_subprocess(
 
         paths = {name: tmp / f"{name}.npy" for name in ("x_train", "y_train", "x_test")}
         np.save(paths["x_train"], np.asarray(X_train, dtype=np.float32))
+        # float32 for both tasks: the child casts back to int for classification.
+        # Saving a bool array as-is would load as bool and break PCA/int casting.
         np.save(paths["y_train"], np.asarray(y_train, dtype=np.float32))
         np.save(paths["x_test"], np.asarray(X_test, dtype=np.float32))
 
@@ -826,6 +879,7 @@ def predict_subprocess(
             "out_lower": str(tmp / "lower.npy"),
             "out_upper": str(tmp / "upper.npy"),
             "kind": kind,
+            "task": task,
             "n_estimators": n_estimators,
             "device": device,
             "seed": seed,
@@ -939,12 +993,8 @@ def run_cv_subprocess(
                 "Molecule_Name": test["Molecule_Name"][i],
                 "y_true": float(test["y_true"][i]),
                 "y_pred": float(preds[i]),
-                "y_lower": float(test["y_lower"][i])
-                if test["y_lower"][i] is not None
-                else None,
-                "y_upper": float(test["y_upper"][i])
-                if test["y_upper"][i] is not None
-                else None,
+                "y_lower": float(test["y_lower"][i]) if test["y_lower"][i] is not None else None,
+                "y_upper": float(test["y_upper"][i]) if test["y_upper"][i] is not None else None,
             }
             if want_interval:
                 record["pred_lower"] = float(lower[i])

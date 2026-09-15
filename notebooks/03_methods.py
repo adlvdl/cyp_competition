@@ -418,14 +418,35 @@ def _(C, evaluation, fp_fold_scores, pl):
 
 @app.cell
 def _(OUT_DIR, fp_macro_folds, mcs):
+    # Forest plot first: this sweep crosses every fingerprint with every tree model,
+    # so the all-pairs grid is ~17x17 and unreadable at any figure size. One row per
+    # representation against the best one answers the question the sweep asks --
+    # "was ECFP4 the wrong descriptor?" -- without the 130-odd comparisons nobody is
+    # weighing.
+    fp_forest_fig = mcs.reference_forest_plot(
+        fp_macro_folds,
+        metric_col="st_rae",
+        higher_is_better=False,
+        top_n=10,
+        title="Fingerprint sweep — macro ST-RAE against the best representation",
+        save_path=OUT_DIR / "fingerprints_forest_vs_best.png",
+    )
+    fp_forest_fig
+    return
+
+
+@app.cell
+def _(OUT_DIR, fp_macro_folds, mcs):
     # An MCS grid with few stars is itself the finding: it says the CV cannot
     # resolve a ranking between these representations, which is exactly the PXR
     # mistake (three finalists within 0.0039 MAE, ordering reversed on the blind
-    # set) that this repo exists to avoid repeating.
+    # set) that this repo exists to avoid repeating. `top_n` keeps it legible enough
+    # for that reading to be possible -- past ~8 methods the cell text collides.
     fp_mcs_fig = mcs.make_mcs_grid(
-        {"Macro-averaged ST-RAE — fingerprint × tree model": fp_macro_folds},
+        {"Macro-averaged ST-RAE — top 8 fingerprint × model": fp_macro_folds},
         metric_col="st_rae",
-        higher_is_better={"Macro-averaged ST-RAE — fingerprint × tree model": False},
+        higher_is_better={"Macro-averaged ST-RAE — top 8 fingerprint × model": False},
+        top_n=8,
         save_path=OUT_DIR / "mcs_heatmap_fingerprints_macro.png",
     )
     fp_mcs_fig
@@ -1057,13 +1078,48 @@ def _(MT_METHODS, evaluation, mo, mt_oof, pl):
 
 
 @app.cell
+def _(mo):
+    mo.md(
+        r"""
+    ### Does multitask help? One row per model
+
+    The paired question in paired form: six rows instead of twelve, each interval
+    answering directly whether that model's two arms are separable. Both arms ran on
+    identical folds, so the fold-wise difference is a true repeated measure.
+
+    The pattern to look for is *which* models move. If the gain concentrates in the
+    models that were weakest single-task, that is weak endpoints borrowing strength;
+    if it appears on the strong frozen-embedding models too, the story is different.
+
+    **Read the intervals, not the p-values.** These are uncorrected paired t-tests on
+    fold differences — more permissive than the Holm-corrected paired bootstrap below,
+    which is what settles significance. This figure is for the shape of the result.
+    """
+    )
+    return
+
+
+@app.cell
+def _(OUT_DIR, mcs, mt_macro_folds):
+    mt_paired_fig = mcs.paired_arm_plot(
+        mt_macro_folds,
+        metric_col="st_rae",
+        higher_is_better=False,
+        title="Does multitask help? (macro-averaged ST-RAE, 5x5 CV)",
+        save_path=OUT_DIR / "multitask_paired.png",
+    )
+    mt_paired_fig
+    return
+
+
+@app.cell
 def _(OUT_DIR, mcs, mt_macro_folds):
     mt_mcs_fig = mcs.make_mcs_grid(
-        {"Macro-averaged ST-RAE — multitask vs single-task": mt_macro_folds},
+        {"Macro-averaged ST-RAE — top 8 arms": mt_macro_folds},
         metric_col="st_rae",
-        higher_is_better={"Macro-averaged ST-RAE — multitask vs single-task": False},
+        higher_is_better={"Macro-averaged ST-RAE — top 8 arms": False},
+        top_n=8,
         save_path=OUT_DIR / "mcs_heatmap_multitask_macro.png",
-        figsize=(11, 9),
     )
     mt_mcs_fig
     return
@@ -1219,12 +1275,30 @@ def _(C, combined_fold_scores, mo, pl):
 
 @app.cell
 def _(OUT_DIR, combined_macro_folds, mcs):
-    combined_mcs_fig = mcs.make_mcs_grid(
-        {"Macro-averaged ST-RAE — all methods": combined_macro_folds},
+    # The submission-deciding view: everything against the best method, so a glance
+    # says which alternatives the CV cannot separate from the winner. Those are the
+    # ones where the choice should fall to cost or simplicity rather than to a
+    # difference the data does not support -- the PXR lesson, made visible.
+    combined_forest_fig = mcs.reference_forest_plot(
+        combined_macro_folds,
         metric_col="st_rae",
-        higher_is_better={"Macro-averaged ST-RAE — all methods": False},
+        higher_is_better=False,
+        top_n=10,
+        title="All methods — macro ST-RAE against the best",
+        save_path=OUT_DIR / "all_methods_forest_vs_best.png",
+    )
+    combined_forest_fig
+    return
+
+
+@app.cell
+def _(OUT_DIR, combined_macro_folds, mcs):
+    combined_mcs_fig = mcs.make_mcs_grid(
+        {"Macro-averaged ST-RAE — top 8 methods": combined_macro_folds},
+        metric_col="st_rae",
+        higher_is_better={"Macro-averaged ST-RAE — top 8 methods": False},
+        top_n=8,
         save_path=OUT_DIR / "mcs_heatmap_all_methods_macro.png",
-        figsize=(11, 9),
     )
     combined_mcs_fig
     return
