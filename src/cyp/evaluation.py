@@ -181,9 +181,7 @@ def fold_metrics_classification(
     return pl.DataFrame(rows)
 
 
-def compare_methods_classification(
-    oof: pl.DataFrame, pred_col: str = "y_pred"
-) -> pl.DataFrame:
+def compare_methods_classification(oof: pl.DataFrame, pred_col: str = "y_pred") -> pl.DataFrame:
     """Mean +/- std MCC across folds, per method and endpoint -- sorted best
     (highest MCC) first, unlike `compare_methods` where lower ST-RAE is better."""
     per_fold = fold_metrics_classification(oof, pred_col=pred_col)
@@ -288,6 +286,104 @@ def holm_bonferroni(p_values: dict[str, float], alpha: float = 0.05) -> pl.DataF
             }
         )
     return pl.DataFrame(rows)
+
+
+def ence(y_true: np.ndarray, y_pred: np.ndarray, y_var: np.ndarray, n_bins: int = 10) -> float:
+    """Expected Normalized Calibration Error for a regression uncertainty estimate.
+
+    Compounds are sorted by predicted variance and split into `n_bins` equal-count
+    bins. In each bin, compare the root mean variance (RMV, what the model *claims*
+    its typical error is) against the root mean squared error (RMSE, what the error
+    *actually* is): `|RMV - RMSE| / RMV`, averaged across bins. 0 is perfect
+    calibration; chemprop's own `--evaluation-methods ence` computes the same
+    quantity but only prints it to the CLI log, so this recomputes it directly from
+    `y_true`/`y_pred`/`y_var` to get a number back into the notebook.
+
+    `y_var` must be a variance (chemprop's native uncertainty units), not a stdev --
+    matching what `graph_models.ChempropModel.predict(return_uncertainty=True)`
+    returns. A bin with RMV == 0 is skipped rather than dividing by zero.
+    """
+    y_true = np.asarray(y_true, float)
+    y_pred = np.asarray(y_pred, float)
+    y_var = np.asarray(y_var, float)
+    n = len(y_true)
+    if n < n_bins:
+        n_bins = max(1, n)
+    order = np.argsort(y_var)
+    errors_sq = (y_true[order] - y_pred[order]) ** 2
+    variances = y_var[order]
+    bin_edges = np.array_split(np.arange(n), n_bins)
+    contributions = []
+    for idx in bin_edges:
+        if len(idx) == 0:
+            continue
+        rmv = np.sqrt(variances[idx].mean())
+        rmse = np.sqrt(errors_sq[idx].mean())
+        if rmv == 0:
+            continue
+        contributions.append(abs(rmv - rmse) / rmv)
+    return float(np.mean(contributions)) if contributions else float("nan")
+
+
+def miscalibration_area(
+    y_true: np.ndarray, y_pred: np.ndarray, y_var: np.ndarray, n_levels: int = 20
+) -> float:
+    """Area between the observed and ideal confidence-interval coverage curves.
+
+    For each nominal confidence level in `(0, 1)`, build the Gaussian interval
+    `y_pred +/- z * sqrt(y_var)` and measure what fraction of `y_true` actually falls
+    inside it. A well-calibrated model's observed-coverage curve sits on the
+    y=x diagonal; this integrates `|observed - nominal|` over the levels (trapezoid
+    rule) the same way chemprop's own `miscalibration_area` evaluator does. 0 is
+    perfect calibration, up to ~0.5 for a badly miscalibrated one.
+    """
+    from scipy.stats import norm
+
+    y_true = np.asarray(y_true, float)
+    y_pred = np.asarray(y_pred, float)
+    y_var = np.asarray(y_var, float)
+    std = np.sqrt(np.clip(y_var, 0, None))
+    levels = np.linspace(0.01, 0.99, n_levels)
+    observed = []
+    for level in levels:
+        z = norm.ppf(0.5 + level / 2)
+        within = np.abs(y_true - y_pred) <= z * std
+        observed.append(np.mean(within))
+    return float(np.trapezoid(np.abs(np.asarray(observed) - levels), levels))
+
+
+def uncertainty_calibration_report(
+    oof: pl.DataFrame,
+    unc_col: str = "y_unc",
+    pred_col: str = "y_pred",
+    group_cols: tuple[str, ...] = ("method", "endpoint"),
+    n_bins: int = 10,
+) -> pl.DataFrame:
+    """ENCE, miscalibration area and the uncertainty/error Spearman correlation, per
+    group (typically per uncertainty method x endpoint).
+
+    The Spearman column checks the weaker, more actionable property separately from
+    calibration: even an uncertainty estimate with a miscalibrated *scale* is useful
+    for ranking predictions from most to least trustworthy (the ensembling use case)
+    as long as it is rank-correlated with actual error, which calibration alone does
+    not guarantee.
+    """
+    rows = []
+    for keys, group in oof.group_by(group_cols):
+        y_true = group["y_true"].to_numpy()
+        y_pred = group[pred_col].to_numpy()
+        y_var = group[unc_col].to_numpy()
+        abs_error = np.abs(y_true - y_pred)
+        rows.append(
+            {
+                **dict(zip(group_cols, keys, strict=True)),
+                "ence": ence(y_true, y_pred, y_var, n_bins=n_bins),
+                "miscalibration_area": miscalibration_area(y_true, y_pred, y_var),
+                "unc_error_spearman": _safe_spearman(abs_error, y_var),
+                "n": len(y_true),
+            }
+        )
+    return pl.DataFrame(rows).sort(list(group_cols))
 
 
 def bias_by_potency_bin(
