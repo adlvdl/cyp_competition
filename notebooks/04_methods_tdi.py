@@ -191,9 +191,7 @@ def _():
 
 @app.cell
 def _(mo):
-    QUICK = mo.ui.checkbox(
-        value=False, label="Quick mode (1 outer repeat, 1024 bits, 10 epochs)"
-    )
+    QUICK = mo.ui.checkbox(value=False, label="Quick mode (1 outer repeat, 1024 bits, 10 epochs)")
     QUICK
     return (QUICK,)
 
@@ -207,8 +205,7 @@ def _(QUICK, mo):
     # exists to prove the pipeline end to end rather than to produce a number.
     chemprop_epochs = 10 if quick else 50
     mo.md(
-        f"Running with `n_outer={n_outer}`, `n_bits={n_bits}`, "
-        f"`chemprop_epochs={chemprop_epochs}`."
+        f"Running with `n_outer={n_outer}`, `n_bits={n_bits}`, `chemprop_epochs={chemprop_epochs}`."
     )
     return chemprop_epochs, n_bits, n_outer, quick
 
@@ -277,21 +274,21 @@ def _(C, data, mo, pl):
         {
             "isoform": list(tdi_frames),
             "n_compounds": [f.height for f in tdi_frames.values()],
-            "positive_rate": [
-                round(float(f["y_true"].mean()), 4) for f in tdi_frames.values()
-            ],
+            "positive_rate": [round(float(f["y_true"].mean()), 4) for f in tdi_frames.values()],
         }
     )
 
-    mo.vstack([
-        mo.ui.table(_counts, page_size=5),
-        mo.md(
-            f"**{tdi_overlap['both']:,} of {tdi_overlap['union']:,} compounds "
-            f"({tdi_overlap['pct']:.1f}%) carry both isoforms** — against 26.7% for "
-            "the four regression endpoints. The multitask lever that won in 03 is "
-            "roughly five times scarcer here; read every result below against that."
-        ),
-    ])
+    mo.vstack(
+        [
+            mo.ui.table(_counts, page_size=5),
+            mo.md(
+                f"**{tdi_overlap['both']:,} of {tdi_overlap['union']:,} compounds "
+                f"({tdi_overlap['pct']:.1f}%) carry both isoforms** — against 26.7% for "
+                "the four regression endpoints. The multitask lever that won in 03 is "
+                "roughly five times scarcer here; read every result below against that."
+            ),
+        ]
+    )
     return tdi_frames, tdi_overlap
 
 
@@ -328,9 +325,7 @@ def _(cv, mo, n_outer, tdi_frames):
     for _fold in ALL_FOLDS:
         _test_names, _train_names = set(), set()
         for _iso, _frame in tdi_frames.items():
-            for _fd, _o, _i, _tr, _v, _te in cv.fold_assignment_splits(
-                _frame, FOLD_ASSIGNMENTS
-            ):
+            for _fd, _o, _i, _tr, _v, _te in cv.fold_assignment_splits(_frame, FOLD_ASSIGNMENTS):
                 if _fd != _fold:
                     continue
                 _test_names |= set(_te["Molecule_Name"].to_list())
@@ -428,9 +423,7 @@ def _(CACHE_DIR, mo, np, pl, tdi_frames):
     from cyp.graph_models import chemeleon_embed
 
     chemeleon_features = {}
-    with mo.status.progress_bar(
-        total=len(tdi_frames), title="CheMeleon embeddings"
-    ) as _bar:
+    with mo.status.progress_bar(total=len(tdi_frames), title="CheMeleon embeddings") as _bar:
         for _iso, _frame in tdi_frames.items():
             _cache = CACHE_DIR / f"chemeleon_tdi_{_iso}.npy"
             if _cache.exists():
@@ -540,10 +533,7 @@ def _(
         # separated by every other model's fit on the same fold.
         for _fold in ALL_FOLDS:
             for _method, _arm in _units:
-                _cache = (
-                    CACHE_DIR
-                    / f"tdi_{_method}_{_arm}_fold{_fold}_{CACHE_SUFFIX}.parquet"
-                )
+                _cache = CACHE_DIR / f"tdi_{_method}_{_arm}_fold{_fold}_{CACHE_SUFFIX}.parquet"
                 if _cache.exists():
                     # Timed when the cache was built; the log already has it.
                     _oof = pl.read_parquet(_cache)
@@ -597,10 +587,7 @@ def _(C, evaluation, np, pl, tdi_oof):
         """Macro-averaged MCC over both isoforms, per (method, fold)."""
         folds = evaluation.fold_metrics_classification(frame)
         return evaluation.macro_averaged_fold_metrics(
-            {
-                _iso: folds.filter(pl.col("endpoint") == _iso)
-                for _iso in C.TDI_ISOFORMS
-            },
+            {_iso: folds.filter(pl.col("endpoint") == _iso) for _iso in C.TDI_ISOFORMS},
             metric_col="mcc",
         )
 
@@ -612,9 +599,7 @@ def _(C, evaluation, np, pl, tdi_oof):
     for _method in sorted(tdi_oof["method"].unique().to_list()):
         _sub = tdi_oof.filter(pl.col("method") == _method)
         for _t in THRESHOLD_GRID:
-            _macro = _macro_mcc(
-                _sub.with_columns((pl.col("y_prob") >= _t).alias("y_pred"))
-            )
+            _macro = _macro_mcc(_sub.with_columns((pl.col("y_prob") >= _t).alias("y_pred")))
             _rows.append(
                 {
                     "method": _method,
@@ -667,9 +652,7 @@ def _(C, evaluation, np, pl, tdi_oof):
             how="left",
         )
         .with_columns(
-            (pl.col("macro_mcc_tuned") - pl.col("macro_mcc_at_0.5"))
-            .round(4)
-            .alias("gain")
+            (pl.col("macro_mcc_tuned") - pl.col("macro_mcc_at_0.5")).round(4).alias("gain")
         )
         .sort("macro_mcc_tuned", descending=True)
     )
@@ -707,9 +690,7 @@ def _(evaluation, pl, tdi_oof_tuned):
     # that choice is load-bearing rather than cosmetic on this data.
     tdi_fold_scores = evaluation.fold_metrics_classification(tdi_oof_tuned)
 
-    _scores = tdi_fold_scores.group_by(["method", "endpoint"]).agg(
-        pl.col("mcc").mean()
-    )
+    _scores = tdi_fold_scores.group_by(["method", "endpoint"]).agg(pl.col("mcc").mean())
     _split = _scores.with_columns(
         pl.col("method").str.replace(r"_(single|multi)task$", "").alias("model"),
         pl.when(pl.col("method").str.ends_with("_multitask"))
@@ -727,9 +708,7 @@ def _(evaluation, pl, tdi_oof_tuned):
             pl.col("singletask").round(4),
             pl.col("multitask").round(4),
         )
-        .with_columns(
-            (pl.col("multitask") - pl.col("singletask")).round(4).alias("delta")
-        )
+        .with_columns((pl.col("multitask") - pl.col("singletask")).round(4).alias("delta"))
         .sort(["endpoint", "delta"], descending=[False, True], nulls_last=True)
     )
     tdi_by_isoform
@@ -758,10 +737,7 @@ def _(mo):
 @app.cell
 def _(C, evaluation, pl, tdi_fold_scores):
     tdi_macro_folds = evaluation.macro_averaged_fold_metrics(
-        {
-            _iso: tdi_fold_scores.filter(pl.col("endpoint") == _iso)
-            for _iso in C.TDI_ISOFORMS
-        },
+        {_iso: tdi_fold_scores.filter(pl.col("endpoint") == _iso) for _iso in C.TDI_ISOFORMS},
         metric_col="mcc",
     )
     tdi_macro = (
@@ -809,12 +785,17 @@ def _(PAIRED_METHODS, evaluation, mo, pl, tdi_oof_tuned):
             _wide = (
                 tdi_oof_tuned.filter(pl.col("method") == _a)
                 .select(
-                    "endpoint", "fold", "Molecule_Name", "y_true",
+                    "endpoint",
+                    "fold",
+                    "Molecule_Name",
+                    "y_true",
                     pl.col("y_pred").alias("pred_a"),
                 )
                 .join(
                     tdi_oof_tuned.filter(pl.col("method") == _b).select(
-                        "endpoint", "fold", "Molecule_Name",
+                        "endpoint",
+                        "fold",
+                        "Molecule_Name",
                         pl.col("y_pred").alias("pred_b"),
                     ),
                     on=["endpoint", "fold", "Molecule_Name"],
@@ -836,22 +817,20 @@ def _(PAIRED_METHODS, evaluation, mo, pl, tdi_oof_tuned):
     # Holm across the family, not per comparison read in isolation.
     tdi_holm = (
         evaluation.holm_bonferroni(
-            {
-                r["model"]: r["p_value"]
-                for r in _rows
-                if "p_value" in r and r["p_value"] is not None
-            }
+            {r["model"]: r["p_value"] for r in _rows if "p_value" in r and r["p_value"] is not None}
         )
         if any("p_value" in r for r in _rows)
         else pl.DataFrame()
     )
 
-    mo.vstack([
-        mo.md("**Paired bootstrap — multitask vs single-task, per model**"),
-        mo.ui.table(tdi_paired, page_size=15),
-        mo.md("**Holm-corrected across the family**"),
-        mo.ui.table(tdi_holm, page_size=15),
-    ])
+    mo.vstack(
+        [
+            mo.md("**Paired bootstrap — multitask vs single-task, per model**"),
+            mo.ui.table(tdi_paired, page_size=15),
+            mo.md("**Holm-corrected across the family**"),
+            mo.ui.table(tdi_holm, page_size=15),
+        ]
+    )
     return tdi_holm, tdi_paired
 
 
@@ -966,10 +945,7 @@ def _(OUT_DIR, C, mcs, pl, tdi_fold_scores):
     # Per-isoform panels alongside the macro grid. 01_baseline found CYP2D6's methods
     # markedly less separable than CYP3A4's; this is where that would show again.
     tdi_mcs_per_isoform = mcs.make_mcs_grid(
-        {
-            _iso: tdi_fold_scores.filter(pl.col("endpoint") == _iso)
-            for _iso in C.TDI_ISOFORMS
-        },
+        {_iso: tdi_fold_scores.filter(pl.col("endpoint") == _iso) for _iso in C.TDI_ISOFORMS},
         metric_col="mcc",
         higher_is_better={_iso: True for _iso in C.TDI_ISOFORMS},
         top_n=6,
@@ -1013,9 +989,7 @@ def _(OUT_DIR, threshold_sweep):
     _colour = {_model: _palette(_i % 10) for _i, _model in enumerate(_models)}
 
     for _method in _methods:
-        _sub = threshold_sweep.filter(threshold_sweep["method"] == _method).sort(
-            "threshold"
-        )
+        _sub = threshold_sweep.filter(threshold_sweep["method"] == _method).sort("threshold")
         _is_mt = _method.endswith("_multitask")
         _ax.plot(
             _sub["threshold"],
@@ -1040,9 +1014,7 @@ def _(OUT_DIR, threshold_sweep):
     _ax.set_title("MCC is not optimized at 0.5 on a ~21%-positive label")
     # Outside the axes: 11 series inside the plot covered the curves they describe.
     _ax.legend(fontsize=7, loc="center left", bbox_to_anchor=(1.01, 0.5))
-    _fig.savefig(
-        OUT_DIR / "threshold_sweep.png", dpi=300, bbox_inches="tight"
-    )
+    _fig.savefig(OUT_DIR / "threshold_sweep.png", dpi=300, bbox_inches="tight")
     _fig
     return
 
@@ -1076,22 +1048,24 @@ def _(CACHE_SUFFIX, TIMING_LOG, mo, n_outer, timings):
             "one, or run the other mode."
         )
     elif CACHE_SUFFIX == "quick":
-        _timing_view = mo.vstack([
-            mo.md("**Measured (quick mode)**"),
-            mo.ui.table(_summary, page_size=20),
-            mo.md(f"**Projected full 5×5 run** (×{5 // max(n_outer, 1)} folds)"),
-            mo.ui.table(
-                timings.extrapolate(
-                    TIMING_LOG, from_mode="quick", from_n_outer=n_outer
+        _timing_view = mo.vstack(
+            [
+                mo.md("**Measured (quick mode)**"),
+                mo.ui.table(_summary, page_size=20),
+                mo.md(f"**Projected full 5×5 run** (×{5 // max(n_outer, 1)} folds)"),
+                mo.ui.table(
+                    timings.extrapolate(TIMING_LOG, from_mode="quick", from_n_outer=n_outer),
+                    page_size=20,
                 ),
-                page_size=20,
-            ),
-        ])
+            ]
+        )
     else:
-        _timing_view = mo.vstack([
-            mo.md("**Measured (full run)**"),
-            mo.ui.table(_summary, page_size=20),
-        ])
+        _timing_view = mo.vstack(
+            [
+                mo.md("**Measured (full run)**"),
+                mo.ui.table(_summary, page_size=20),
+            ]
+        )
     _timing_view
     return
 
@@ -1102,26 +1076,136 @@ def _(OUT_DIR, TIMING_LOG, pl, timings):
     # interleaving kept the MPS degradation from accumulating.
     import matplotlib.pyplot as plt2
 
+    # The fold at which this run was restarted with CYP_CHEMPROP_DEVICE=cpu. Read off
+    # the data rather than remembered: both arms fall from ~2,000s to ~76s here and
+    # neither drifts again. Folds 3, 4, 10, 21 and 24 also spike, but those are
+    # machine-contention episodes that hit every method at once and recover on their
+    # own -- a different problem from the permanent MPS climb, and the reason this
+    # boundary is drawn where the *plateau* changes rather than at any single spike.
+    DEVICE_SWITCH_FOLD = 14
+
+    #: Above this, a CPU-side fold is a contention episode rather than the device.
+    CONTENTION_SECONDS = 200
+
     _log = timings.load(TIMING_LOG) if TIMING_LOG.exists() else pl.DataFrame()
     if _log.height and "endpoint" in _log.columns:
-        _cp = _log.filter(pl.col("method").str.starts_with("chemprop")).with_columns(
-            pl.col("endpoint").str.replace("fold", "").cast(pl.Int64, strict=False).alias("fold")
-        ).drop_nulls("fold")
+        _cp = (
+            _log.filter(pl.col("method").str.starts_with("chemprop"))
+            .with_columns(
+                pl.col("endpoint")
+                .str.replace("fold", "")
+                .cast(pl.Int64, strict=False)
+                .alias("fold")
+            )
+            .drop_nulls("fold")
+        )
     else:
         _cp = pl.DataFrame()
 
     if _cp.height:
-        _fig2, _ax2 = plt2.subplots(figsize=(8, 4.5))
-        for _arm in sorted(_cp["method"].unique().to_list()):
+        # Degraded MPS plateau against CPU steady state. Deliberately *not* the two
+        # regimes' plain medians: the MPS side includes three fast folds from before
+        # degradation set in, so its median (974s) describes neither regime and
+        # understates the gap. The plateau is what the fix actually replaced.
+        _plateau = _cp.filter(
+            (pl.col("fold") >= 7)
+            & (pl.col("fold") < DEVICE_SWITCH_FOLD)
+            & (pl.col("seconds") > 500)
+        )["seconds"].median()
+        _steady = _cp.filter(
+            (pl.col("fold") >= DEVICE_SWITCH_FOLD) & (pl.col("seconds") < CONTENTION_SECONDS)
+        )["seconds"].median()
+
+        _fig2, _ax2 = plt2.subplots(figsize=(9.5, 5.4))
+        _ax2.set_ylim(0, 2500)
+        _ax2.axvspan(-0.6, DEVICE_SWITCH_FOLD - 0.5, color="#d62728", alpha=0.07, zorder=0)
+        _ax2.axvspan(
+            DEVICE_SWITCH_FOLD - 0.5,
+            _cp["fold"].max() + 0.6,
+            color="#2ca02c",
+            alpha=0.07,
+            zorder=0,
+        )
+        _ax2.axvline(
+            DEVICE_SWITCH_FOLD - 0.5, color="#333333", linestyle="--", linewidth=1.6, zorder=3
+        )
+
+        for _arm, _colour in [
+            ("chemprop_multitask", "#1f77b4"),
+            ("chemprop_singletask", "#ff7f0e"),
+        ]:
             _s = _cp.filter(pl.col("method") == _arm).sort("fold")
-            _ax2.plot(_s["fold"], _s["seconds"], marker="o", label=_arm)
+            _ax2.plot(
+                _s["fold"],
+                _s["seconds"],
+                marker="o",
+                markersize=4,
+                label=_arm,
+                color=_colour,
+                zorder=4,
+            )
+
+        # Ring the contention spikes. Fold 24 sits inside the CPU region and reads as
+        # the fix failing unless it is marked as the separate problem it is.
+        _spikes = _cp.filter(
+            ((pl.col("fold") >= DEVICE_SWITCH_FOLD) & (pl.col("seconds") > CONTENTION_SECONDS))
+            | (pl.col("fold").is_in([3, 4, 5]) & (pl.col("seconds") > 300))
+        )
+        _ax2.scatter(
+            _spikes["fold"],
+            _spikes["seconds"],
+            s=150,
+            facecolors="none",
+            edgecolors="#555555",
+            linewidths=1.4,
+            zorder=5,
+        )
+
+        _ax2.text(
+            (DEVICE_SWITCH_FOLD - 1) / 2,
+            2420,
+            f"MPS (GPU) — degraded plateau ≈ {_plateau:.0f}s",
+            ha="center",
+            va="top",
+            fontsize=10,
+            color="#a01c1c",
+            weight="bold",
+        )
+        _ax2.text(
+            DEVICE_SWITCH_FOLD + (_cp["fold"].max() - DEVICE_SWITCH_FOLD) / 2,
+            2420,
+            f"CPU — steady ≈ {_steady:.0f}s",
+            ha="center",
+            va="top",
+            fontsize=10,
+            color="#1c7a1c",
+            weight="bold",
+        )
+        _ax2.annotate(
+            "CYP_CHEMPROP_DEVICE=cpu",
+            xy=(DEVICE_SWITCH_FOLD - 0.5, 1150),
+            xytext=(DEVICE_SWITCH_FOLD + 1.0, 1500),
+            fontsize=9,
+            arrowprops={"arrowstyle": "->", "color": "#333333", "linewidth": 1.1},
+        )
+        _ax2.annotate(
+            "machine contention, not the device\n(hits every method at once; recovers on its own)",
+            xy=(24, 1020),
+            xytext=(15.2, 700),
+            fontsize=8,
+            color="#555555",
+            arrowprops={"arrowstyle": "->", "color": "#555555", "linewidth": 0.9},
+        )
+
         _ax2.set_xlabel("fold index (execution order)")
         _ax2.set_ylabel("seconds per unit")
-        _ax2.set_title("Chemprop cost across folds — flat means interleaving worked")
-        _ax2.legend(fontsize=8)
-        _fig2.savefig(
-            OUT_DIR / "chemprop_fold_timings.png", dpi=300, bbox_inches="tight"
+        _ax2.set_title(
+            "Chemprop per-fold cost: MPS degrades permanently, CPU is flat — "
+            f"and {_plateau / _steady:.0f}× faster"
         )
+        _ax2.legend(fontsize=8.5, loc="upper left", bbox_to_anchor=(0.005, 0.80), framealpha=0.95)
+        _ax2.margins(x=0.02)
+        _fig2.savefig(OUT_DIR / "chemprop_fold_timings.png", dpi=300, bbox_inches="tight")
         _timing_trend = _fig2
     else:
         _timing_trend = "No Chemprop timings recorded in this mode yet."
