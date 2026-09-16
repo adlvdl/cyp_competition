@@ -73,12 +73,12 @@ def test_modes_do_not_overwrite_each_other(tmp_path: Path) -> None:
     timings.record(log, "new_models", "chemprop", "CYP3A4", "full", 300.0)
 
     assert timings.load(log).height == 2
-    assert timings.summary(log, mode="quick").row(0, named=True)[
-        "total_seconds"
-    ] == pytest.approx(60.0)
-    assert timings.summary(log, mode="full").row(0, named=True)[
-        "total_seconds"
-    ] == pytest.approx(300.0)
+    assert timings.summary(log, mode="quick").row(0, named=True)["total_seconds"] == pytest.approx(
+        60.0
+    )
+    assert timings.summary(log, mode="full").row(0, named=True)["total_seconds"] == pytest.approx(
+        300.0
+    )
 
 
 def test_summary_totals_across_endpoints(tmp_path: Path) -> None:
@@ -136,3 +136,77 @@ def test_summary_of_empty_log_is_empty(tmp_path: Path) -> None:
     summary = timings.summary(tmp_path / "nothing.csv")
     assert isinstance(summary, pl.DataFrame)
     assert summary.height == 0
+
+
+def test_flag_contention_finds_the_majority_baseline_evidence(tmp_path: Path) -> None:
+    """Regression test for the clearest real evidence: `majority_singletask`.
+
+    That method is `np.mean` on a boolean array and cannot have a genuine slow fold,
+    so its 3.6s-against-0.2s spike (observed in experiments/04_methods_tdi) is the
+    strongest single data point that these episodes are environmental. Pinned here
+    with the real numbers rather than a synthetic stand-in.
+    """
+    path = tmp_path / "timings.csv"
+    for seconds in (0.2, 0.1, 0.2, 3.6, 0.1, 0.2):
+        timings.record(
+            path,
+            stage="tdi_multitask",
+            method="majority_singletask",
+            endpoint=f"fold{len(timings.load(path))}",
+            mode="full",
+            seconds=seconds,
+        )
+
+    flagged = timings.flag_contention(path, floor_seconds=1.0)
+
+    assert flagged.height == 1
+    assert flagged["seconds"].item() == 3.6
+    assert flagged["ratio"].item() >= 18.0
+
+
+def test_flag_contention_ignores_ordinary_jitter(tmp_path: Path) -> None:
+    """A healthy run with normal fold-to-fold variance flags nothing."""
+    path = tmp_path / "timings.csv"
+    for i, seconds in enumerate([64.0, 66.5, 63.2, 68.1, 65.0, 64.8, 67.3]):
+        timings.record(
+            path, stage="s", method="m", endpoint=f"fold{i}", mode="full", seconds=seconds
+        )
+
+    assert timings.flag_contention(path).height == 0
+
+
+def test_flag_contention_respects_the_floor(tmp_path: Path) -> None:
+    """A fast method's 3x jitter should not trip the multiple without the floor.
+
+    A tree model at 2s against a 6s outlier is technically 3x, but 6 seconds is not
+    contention by any reasonable reading -- `floor_seconds` exists for exactly this.
+    """
+    path = tmp_path / "timings.csv"
+    for i, seconds in enumerate([2.0, 2.1, 1.9, 6.0, 2.0]):
+        timings.record(
+            path, stage="s", method="fast_tree", endpoint=f"fold{i}", mode="full", seconds=seconds
+        )
+
+    assert timings.flag_contention(path).height == 0
+    # But the same ratio well above the floor is flagged.
+    assert timings.flag_contention(path, floor_seconds=5.0).height == 1
+
+
+def test_flag_contention_respects_mode(tmp_path: Path) -> None:
+    """A quick-mode outlier must not be judged against a full-mode baseline."""
+    path = tmp_path / "timings.csv"
+    for i, seconds in enumerate([10.0, 11.0, 9.0]):
+        timings.record(
+            path, stage="s", method="m", endpoint=f"fold{i}", mode="quick", seconds=seconds
+        )
+    timings.record(path, stage="s", method="m", endpoint="fold0", mode="full", seconds=500.0)
+
+    quick_only = timings.flag_contention(path, mode="quick", floor_seconds=1.0)
+    assert quick_only.height == 0
+
+
+def test_flag_contention_returns_typed_empty_frame_when_absent(tmp_path: Path) -> None:
+    result = timings.flag_contention(tmp_path / "nothing.csv")
+    assert result.height == 0
+    assert "ratio" in result.columns
+    assert "baseline_seconds" in result.columns

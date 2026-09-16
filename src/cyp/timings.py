@@ -162,3 +162,100 @@ def extrapolate(
         (pl.col("total_seconds") * factor / 60).round(1).alias("projected_full_minutes"),
         (pl.col("total_seconds") * factor / 3600).round(2).alias("projected_full_hours"),
     ).select("stage", "method", "total_seconds", "projected_full_minutes", "projected_full_hours")
+
+
+#: A unit above this many multiples of its own method's median is contention, not a
+#: property of the method. `majority_singletask` -- literally `np.mean` on a boolean
+#: array -- once took 3.6s against a 0.1-0.2s baseline (18-36x): a method that does
+#: no real computation cannot have a genuine slow fold, so any multiple this large is
+#: proof the machine was doing something else. Chosen from that evidence rather than
+#: a round number: 3x sits well below every real contention episode seen so far
+#: (18x-46x on the trivial baseline, 5x-32x on the timed models) but above the
+#: fold-to-fold jitter a healthy run shows.
+CONTENTION_MULTIPLE = 3.0
+
+#: A unit need not be slow at all to be worth flagging -- a method with a genuinely
+#: short baseline (a tree model at 2s) would trip `CONTENTION_MULTIPLE` on ordinary
+#: jitter. This floor means "and it must also be slow in absolute terms", matching
+#: the 200s threshold both prior investigations settled on by hand.
+CONTENTION_FLOOR_SECONDS = 200.0
+
+
+def flag_contention(
+    path: Path | str,
+    mode: str | None = None,
+    multiple: float = CONTENTION_MULTIPLE,
+    floor_seconds: float = CONTENTION_FLOOR_SECONDS,
+) -> pl.DataFrame:
+    """Which recorded units look like machine contention rather than real cost.
+
+    Two prior sessions (see `experiments/04_methods_tdi/` and
+    `experiments/05_auxiliary_data/`) diagnosed this by hand: watch `timings.csv` as
+    it grows, and when a unit is anomalously slow, check `ps` for Spotlight/backup
+    activity and `pmset -g therm` for thermal state at that moment. The clearest
+    evidence for "this is environmental, not the method" was `majority_singletask` --
+    plain `np.mean` on a boolean array -- taking 20-30x its own baseline; a method
+    with no real computation cannot have a slow fold for a genuine reason.
+
+    This is the classification half of that pattern, factored out so a fourth
+    session does not reconstruct it from a scratchpad script. It answers "which rows
+    are contention" from the log alone; live process/thermal snapshotting at
+    detection time is `watch_contention.sh` alongside this module, since that part
+    needs the shell and cannot be done from a CSV after the fact.
+
+    **Known false positive: a method's one-time pretrain fold.**
+    `aux_training.run_cv_pretrained` pays the pretraining cost once, on whichever
+    fold runs first for that method, then every later fold is a fine-tune-only fit
+    at a fraction of the cost. Nothing in this schema marks which row that was --
+    `stage`/`method`/`endpoint`/`seconds` carries no such flag -- so with only a
+    handful of folds recorded so far, that one legitimately-slow row inflates the
+    25th-percentile baseline and can itself get flagged. It stops mattering once
+    enough folds have run that one slow row no longer sits in the lower quartile.
+    Read a flagged *fold 0* (or whichever fold ran first) with that in mind rather
+    than assuming it is contention; every other flagged row is not subject to this.
+
+    Args:
+        path: The timing CSV.
+        mode: Restrict to one run mode, as in `summary`.
+        multiple: How many times a method's own baseline counts as an outlier.
+        floor_seconds: A unit must also exceed this in absolute terms -- guards a
+            fast method (a tree model at 2s) from tripping the multiple on ordinary
+            jitter.
+
+    Returns:
+        One row per flagged unit, with its method's baseline for context and
+        `ratio = seconds / baseline`. Empty if nothing was recorded or nothing
+        qualifies -- an empty result is the common, healthy case, not a failure.
+    """
+    frame = load(path)
+    if mode is not None:
+        frame = frame.filter(pl.col("mode") == mode)
+    if not frame.height:
+        return frame.with_columns(
+            pl.lit(None, dtype=pl.Float64).alias("baseline_seconds"),
+            pl.lit(None, dtype=pl.Float64).alias("ratio"),
+        )
+
+    # The 25th percentile, not the median, is the baseline. A method's very first
+    # fold is a real, structural cost in the pretrained arms this was written for
+    # (`aux_training.run_cv_pretrained` pays for the one-time pretrain on fold 0,
+    # not the fold's own fit), and that pattern is one-sided: pretraining and
+    # contention both make a unit slower than steady-state, never faster. A median
+    # already has that slow outlier pulled into it once there are only a handful of
+    # folds, which drags every OTHER fold's ratio down and can hide real contention.
+    # The lower quartile is contaminated only once at least a quarter of a method's
+    # folds are themselves slow -- by which point "contention" is the wrong word for
+    # what is happening anyway.
+    with_baseline = frame.with_columns(
+        pl.col("seconds").quantile(0.25, interpolation="lower").over(["stage", "method"]).alias(
+            "baseline_seconds"
+        )
+    )
+    return (
+        with_baseline.filter(
+            (pl.col("seconds") >= floor_seconds)
+            & (pl.col("seconds") >= multiple * pl.col("baseline_seconds"))
+        )
+        .with_columns((pl.col("seconds") / pl.col("baseline_seconds")).round(1).alias("ratio"))
+        .sort("ratio", descending=True)
+    )
