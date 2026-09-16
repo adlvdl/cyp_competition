@@ -1,0 +1,4 @@
+arm,spearman,pearson,delta_vs_baseline
+baseline,0.3274,0.3324,0.0
+oracle,0.8137,0.7201,0.4863
+predicted,0.2296,0.2197,-0.0978
