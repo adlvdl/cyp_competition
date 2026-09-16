@@ -144,6 +144,361 @@ Full 5x5 nested scaffold CV on the TDI track, 275 cached OOF units, macro-averag
 
 **Forcing Chemprop to CPU fixes the MPS degradation and is faster outright.** Measured in this run: on MPS `chemprop_singletask` went 100s, 91s, 97s for three folds then rose to ~2000s and **plateaued there permanently** (~20x). On CPU, folds 14-20 ran 80.7, 75.7, 76.4, 75.9, 79.6, 75.8, 76.1s — no drift, and faster than MPS ever was, since a 408K-parameter model at batch 64 never gives the GPU enough work to amortise launch overhead. Set `CYP_CHEMPROP_DEVICE=cpu` (see `graph_models.device`). Interleaving methods within a fold does **not** prevent the MPS degradation, though it does make it diagnosable. Separately, sporadic machine-level contention episodes hit every method at once regardless of device (folds 3, 4, 10, 21 here) and recover on their own — do not confuse the two.
 
+**The contention episodes have two confirmed causes, found by watching a live run rather than reasoning after the fact.** Two prior investigations (`experiments/04_methods_tdi/`, `experiments/05_auxiliary_data/`) diagnosed this by tailing `timings.csv` and, on an anomalous unit, checking `ps` and `pmset -g therm` at that exact moment — waiting until afterward doesn't work, since the responsible process (if one exists) has usually already exited by the time anyone asks. The clearest single piece of evidence: `majority_singletask`, which is plain `np.mean` on a boolean array, took 3.6s against a 0.1-0.2s baseline (18-36x) — a method with no real computation cannot have a genuine slow fold, so that spike alone proves the cause is environmental. Confirmed causes, and neither is universal: **(1)** Spotlight/`mdworker` CPU activity correlating with a spike (04's investigation), and **(2)** a depressed kernel `ApplePassthroughPPM` thermal power budget with *no* competing process and nothing from `pmset -g therm` (05's investigation, after ~9h of near-continuous chemprop fitting) — self-inflicted throttling from sustained load, not an idle-triggered daemon. Neither session found the episodes tied specifically to the user being away from the machine.
+
+This is now reusable rather than something to rebuild by hand each time. `timings.flag_contention(path)` classifies a finished log: any unit ≥`CONTENTION_FLOOR_SECONDS` (200s) **and** ≥`CONTENTION_MULTIPLE` (3x) its own method's 25th-percentile baseline gets flagged, with the exact `majority_singletask` numbers pinned as a regression test in `tests/test_timings.py`. One known false positive: a pretrained arm's first fold pays a real one-time pretraining cost (`aux_training.run_cv_pretrained`), which nothing in the CSV schema marks, so it can look like an outlier until enough folds accumulate — read a flagged fold 0 with that in mind. `scripts/watch_contention.sh` (`make watch-contention TIMING=path/to/timings.csv`, run in a second terminal alongside a notebook) is the live half: it tails the log and snapshots `ps`, `pmset -g therm`, and a `log show` grep for `ThermalPowerBudget` the moment a unit is flagged, so the cause isn't lost by the time anyone looks. Written for bash 3.2 (macOS's shipped version, and this machine has no Homebrew bash) — no associative arrays.
+
+**`watch_contention.sh` silently died on its own first real detection, twice, before this was fixed.** Under `set -eo pipefail`, `ps -Ao ... | head -15` sends `ps` a SIGPIPE the moment `head` closes its read end, and `pipefail` turns that broken-pipe exit into the whole pipeline's status — which then kills the *entire script*, immediately, with no error text, since nothing failed loudly enough to print anything. This only fires inside `snapshot()`, i.e. only on an actual flagged row, which is exactly why it looked like the watcher "usually works" in short manual tests and then vanished the moment a real 07_placement contention episode (fold 15's `full_union_aux` at 841s) finally triggered it for the first time. Every other piped command in the function already carried a `|| ...` guard; this was the one bare pipe. Fixed with `|| true`. The general lesson: **every `cmd | head` or `cmd | tail` inside a `set -eo pipefail` script needs an explicit fallback**, because a consumer that stops reading early is not an error in any normal sense but reads as one under `pipefail`. Found only by tracing a real reproduction (`bash -x` plus a manual `trap ... EXIT`) after several synthetic tests with too little accumulated history failed to reproduce it — the bug needs the *live* code path (a real flagged row after several real prior measurements), not a fresh, near-empty test file.
+
+## Chemical space (`notebooks/02_chemical_space.py` → `experiments/02_chemical_space/`)
+
+`endpoint_scorecard.csv` is the one table to read before theorising about why an endpoint is
+hard. It corroborates the difficulty ordering from an angle no CV score can:
+
+| endpoint | n | median CI | below floor | test NN sim | **% extrapolation** | ECFP4 cliff % |
+|:--|--:|--:|--:|--:|--:|--:|
+| CYP1A2 | 1,412 | 0.33 | 16.4% | 0.525 | 7.2% | 16.53 |
+| CYP2C9 | 1,285 | 0.53 | 20.2% | 0.519 | 9.5% | 6.00 |
+| CYP2D6 | 1,493 | **0.27** | 8.6% | **0.469** | **10.8%** | 6.84 |
+| CYP3A4 | 2,335 | 0.38 | **40.4%** | 0.537 | **1.9%** | 14.23 |
+
+**CYP2D6 is hard on three independent axes at once** and easy on none: the tightest credible
+intervals (0.27, so ST-RAE forgives least), the least training support for its test
+compounds (NN similarity 0.469), and the most extrapolation (10.8%, nearly 6x CYP3A4's).
+**CYP3A4 is the mirror image** — 40.4% of its compounds sit below the assay floor where
+intervals are wide and the metric downweights, and only 1.9% of its test set is
+extrapolation. Much of CYP3A4's apparent modelling lead is structural rather than earned,
+and much of CYP2D6's difficulty is a genuine chemical-space problem rather than a modelling
+failure. Do not read the two endpoints' scores as directly comparable.
+
+## Measured results (2026-09-15, `notebooks/05_auxiliary_data.py` → `experiments/05_auxiliary_data/`)
+
+Full 5x5 nested scaffold CV, macro-averaged ST-RAE, every arm paired against 03's winner
+(`chemprop_multitask`) on identical folds. This is the run that produced the shipped
+`pubchem` submission.
+
+| method | shape | macro ST-RAE | std |
+|:--|:--|--:|--:|
+| **pubchem** | encoder pretrained on the NCGC qHTS panel | **0.7160** | 0.0272 |
+| aux_screen | 4 extra heads predicting screen log2fc | 0.7214 | 0.0294 |
+| augmented | screen negatives as censored extra rows | 0.7236 | 0.0267 |
+| chemprop_multitask (03 winner) | — | 0.7304 | 0.0274 |
+| selection | inverse-propensity reweighting | 0.7334 | 0.0291 |
+| pubchem_frozen | pretrained encoder, frozen | 0.7523 | 0.0327 |
+
+Holm-corrected against `chemprop_multitask`: `pubchem`, `aux_screen` and `pubchem_frozen`
+are significant (p=0.000); `augmented` (p=0.033) and `selection` (p=0.066) are **not**.
+Note `pubchem_frozen` is significant in the *wrong direction* — freezing the pretrained
+encoder is clearly worse than fine-tuning it, which is the arm that isolates why
+pretraining works here at all.
+
+**Pretraining helps, but only with the encoder unfrozen** (0.7160 fine-tuned against 0.7523
+frozen, against a 0.7304 no-pretraining control). The gain is in the initialisation, not in
+the frozen features — the same lesson 03 reached from the other direction when four
+unrelated models converged on frozen CheMeleon.
+
+Per endpoint, the shipped `pubchem` arm: CYP3A4 0.4864, CYP2C9 0.6310, CYP1A2 0.8216,
+CYP2D6 0.9251. **CYP2D6 stayed hardest under every arm** — no auxiliary or public data
+shape moved it below 0.917, which is the result that sends the problem to representation
+rather than data.
+
+## Measured results (2026-09-16, `notebooks/06_uncertainty.py` → `experiments/06_uncertainty/`)
+
+**All four of Chemprop's native uncertainty methods are too weakly informative to build on.**
+The screen (5 folds, all four endpoints) ranked them by how well claimed uncertainty tracks
+actual error, and MVE won by a wide relative margin on a low absolute number:
+
+| method | Spearman(abs error, claimed uncertainty) |
+|:--|--:|
+| **MVE** | **0.172** |
+| MC dropout | 0.087 |
+| checkpoint ensemble | 0.080 |
+| evidential regression | 0.015 |
+
+Evidential regression is essentially uninformative (0.015) — worth knowing before reaching
+for it again, since it is the method whose theory most suggests it should work.
+
+MVE was promoted to the full 5x5 (32,625 OOF rows) and holds up only in the same weak sense:
+
+| endpoint | Spearman(abs error, claimed uncertainty) |
+|:--|--:|
+| CYP1A2 | 0.253 |
+| CYP2D6 | 0.148 |
+| CYP3A4 | 0.143 |
+| CYP2C9 | 0.127 |
+
+Real signal but far too weak to drive inverse-variance weighting or uncertainty-aware
+calibration, which were the notebook's stated downstream uses — so the notebook stops at the
+validation step rather than shipping anything. Before resuming, note the constraint it
+establishes: the submission format has **no interval column** — `_conf_low`/`_conf_high` are
+the ground truth's assay uncertainty supplied by the backend, not something a submission can
+set. So uncertainty can only change how a prediction is *built*, never what is reported,
+which caps the value of the whole line of work.
+
+The Innovation award is judged separately from rank and explicitly rewards uncertainty
+quantification, so this may be worth resuming for that reason alone — but not as a route to
+a better macro.
+
+## Placement is separable from ordering, and it is where the leaderboard gap is
+
+A contender published its methodology after scoring macro ST-RAE **0.4378** against our
+0.78 ([blog](https://supercowpowers.github.io/workbench/blogs/cyp_challenge/),
+[code](https://github.com/SuperCowPowers/workbench/tree/main/ml_pipelines/OpenADMET/cyp)).
+Most of that gap is not a better model. `src/cyp/placement.py` implements the part of it
+that is reproducible without spending submissions we do not have.
+
+**R2 factors exactly as `R2 = 2*rho*k - k^2 - b^2`**, with `rho` the Pearson correlation,
+`k = sd(pred)/sd(true)` and `b` the mean offset in units of `sd(true)`. Only `rho` depends
+on the ordering, so `k` and `b` are set by an affine transform that moves no compound's
+rank. Two consequences:
+
+- **R2 is capped at `rho^2`, reached at `k = rho`, not `k = 1`.** Matching the truth's
+  spread is wrong: a model correlating 0.7 with reality should be 70% as wide as reality.
+  This is the quantitative form of the regression-to-the-mean lesson from PXR.
+- **A returned score is an equation in the blind population's moments.** Scores already
+  earned constrain `mean(y)` and `sd(y)` without any further submission.
+
+**Do not hardcode their solved constants.** Their `BLIND_MOMENTS` and `STRAE_MOMENTS` are
+measurements of the *live half* bought by submitting three affine probes of one prediction
+vector and reading back the R2s, plus four direct board probes of CYP2D6's centre. Teams
+get one submission. `placement.py` will not ship numbers we cannot derive ourselves.
+
+**Our three scored submissions solve the population without a probe, and better.** Their
+solve spent two submissions recovering `rho`; a leaderboard reporting **Spearman** gives it
+free, since Spearman is invariant to placement (`placement.pearson_from_spearman`). And
+01/03/05 being *different models* is an advantage rather than the obstacle it first looks
+like: each contributes a curve of consistent populations and the truth is where the curves
+meet (`placement.intersect`). That also resolves a sign ambiguity which defeats any
+single-submission solve — MAE is symmetric in the offset's direction, so `solve_moments`
+recovers the spread reliably and the centre only half the time. Use `intersect` whenever
+two submissions are available, and read its `disagreement` output: above ~0.3 pIC50 units
+the solve has not identified the population and must not be used to place anything.
+
+**The solve needs R2 and Spearman; ST-RAE alone cannot drive it.** ST-RAE is not a
+squared-error metric, so it does not enter `R2 = 2*rho*k - k^2 - b^2` — there is no ST-RAE
+analogue of the decomposition, which is exactly why the reference entry sampled its CYP2D6
+optimum off the board instead of deriving it. And ST-RAE is not placement-invariant, so it
+cannot stand in for Spearman either. A submission contributes to `placement.intersect` only
+once its R2 and Spearman are known. What ST-RAE *does* support on its own is calibrating CV
+against the board: every submission ships an expected per-endpoint ST-RAE in its
+PROVENANCE.md, and the board-to-CV ratio measures how far scaffold CV sits from blind
+difficulty per endpoint. That ratio transfers to the next submission in a way no single
+score does — check its spread across submissions before extrapolating, since a ratio that
+moves between models is a property of the model rather than of the split. Notebook 07's
+Part 2A does this and does not wait for the full solve.
+
+**ST-RAE's optimum is not R2's, and the difference has a sign.** ST-RAE scores zero inside
+a compound's credible interval and low-activity compounds carry wide ones, so predicting
+too high is nearly free while predicting too low is punished by the actives' narrow
+intervals. The optimum therefore sits *above* the true centre and *narrower* than
+`rho*sd`. Measured independently in `tests/test_placement.py` against our own metric, and
+consistent with their report that placing CYP2D6 on its true centre raised R2 0.363 ->
+0.447 while worsening ST-RAE 0.565 -> 0.694. `placement.strae_optimal_placement` finds this
+by grid search against held-out data with known intervals, not by probing a board.
+
+**CV cannot see any of this, and that is not a bug.** Measured on 05's OOF, `recoverable`
+R2 is **0.000-0.002** on every endpoint — chemprop's fold-averaged predictions already sit
+on the OOF population's centre and spread. An affine correction only pays where the
+prediction population differs from the *scoring* population, and OOF is scored against the
+distribution it trained on. Do not conclude from a flat CV result that placement is worth
+nothing; it is the one intervention CV is structurally blind to.
+
+**Measured on the 05 interim reveal (2026-09-16), per endpoint.** The board reports
+ST-RAE, MAE, R2, Spearman and Kendall per task; the four per-task R2 values average to
+0.1985 against the board's own MA-R2 of 0.1986, confirming the macro is a plain arithmetic
+mean. `experiments/07_placement/board_decomposition.csv`:
+
+| endpoint | ST-RAE | R2 | Spearman | implied rho | R2 ceiling | recoverable | % of ceiling lost |
+|:--|--:|--:|--:|--:|--:|--:|--:|
+| CYP1A2 | 0.6887 | 0.3393 | 0.7423 | 0.758 | 0.5744 | 0.2351 | 40.9% |
+| CYP2C9 | 0.5567 | 0.5868 | 0.7629 | 0.778 | 0.6050 | 0.0182 | 3.0% |
+| CYP2D6 | **1.3099** | **−0.7421** | **0.3401** | 0.354 | 0.1255 | 0.8676 | 691% |
+| CYP3A4 | 0.5586 | 0.6102 | 0.7831 | 0.797 | 0.6356 | 0.0254 | 4.0% |
+| macro | 0.7785 | 0.1985 | 0.6571 | — | 0.4852 | 0.2866 | 59% |
+
+**CYP2D6 is both a weak-ordering and a catastrophic-placement problem, not one or the
+other.** Its Spearman is 0.34 against 0.74-0.78 elsewhere, so the ordering genuinely is
+weak and caps R2 at 0.126 whatever we do. But we scored **−0.742** against that cap. A
+negative R2 means worse than a constant predictor, and the 0.868 gap between −0.742 and
+0.126 is pure placement. Fixing placement cannot make CYP2D6 good; it can stop it being a
+disaster, and on a macro-averaged leaderboard that is most of what is available.
+
+**The other three endpoints are already well placed** — 3.0%, 4.0% and 4.1% of their
+ceiling lost. Only CYP1A2 has real headroom (40.9%, 0.235 R2). Do not spend placement
+effort on CYP2C9 or CYP3A4.
+
+**MAE cannot resolve the sign; ST-RAE can.** `moments_from_r2` returns a mirrored pair of
+centres at every spread, and measured on our own submission the two candidates implied MAEs
+**identical to four decimals** at every endpoint — so `solve_moments` was choosing the
+direction arbitrarily, and its apparent agreement with the reference entry's CYP2D6 centre
+(3.114 against their 3.107) was the magnitude being right, not the direction being
+determined. ST-RAE breaks the symmetry because it is not symmetric in the offset: wide
+credible intervals at low activity and narrow ones at high activity mean a population below
+the predictions scores differently from one equally far above.
+`placement.resolve_sign_with_strae` simulates each candidate and compares against the
+board's ST-RAE. On the 05 reveal it picks **LOW at all four endpoints** — the blind
+population sits below our predictions everywhere — and the simulated scores track the board
+closely (0.67/0.54/1.21/0.57 against 0.69/0.56/1.31/0.56).
+
+**Solved blind moments and what correcting them is worth.** Solved from 05's own board row,
+sign resolved by ST-RAE:
+
+| endpoint | our mean | our sd | solved mean | solved sd | centre gap |
+|:--|--:|--:|--:|--:|--:|
+| CYP1A2 | 4.900 | 0.826 | 4.258 | 1.420 | +0.642 |
+| CYP2C9 | 4.816 | 0.782 | 4.683 | 0.990 | +0.133 |
+| CYP2D6 | 4.530 | 0.531 | 3.114 | 1.520 | **+1.416** |
+| CYP3A4 | 4.684 | 0.941 | 4.502 | 1.150 | +0.182 |
+
+Simulating the blind set at these moments reproduces the board (macro 0.747 simulated
+against 0.7785 actual), which is the end-to-end check on the solve. Applying the correction:
+macro ST-RAE **0.747 raw → 0.646 at `k = rho` → 0.613 at the ST-RAE optimum**, with no
+change to the model. CYP2D6 carries it: 1.18 → 0.86 → 0.82.
+
+**Our solved spreads are consistently narrower than theirs** (1.42/0.99/1.52/1.15 against
+4.412/1.101/1.599/1.272) and our centres lower on CYP1A2 and CYP3A4. Two independent solves
+of the same live half, disagreeing by 0.1-0.4. Neither is obviously authoritative — theirs
+rests on three affine probes and a quadratic root choice, ours on a bivariate-normal
+Spearman-to-Pearson step. Treat the direction as settled and the exact values as uncertain.
+
+
+**The moments describe the live half only.** OpenADMET split the 750-compound test set by
+chemical series and the other half is scored only at the end, so a correction fitted to the
+live half transfers to the final one exactly insofar as the series split preserved the
+distribution — which it is designed not to. Record this in any PROVENANCE.md that ships a
+placed submission.
+
+**The correction shipped and scored: macro ST-RAE 0.7785 → 0.7040** (`submissions/07_placement/20260916_pubchem_r2/`,
+board rank 87, 2026-09-16 15:28 UTC). Placed at the **R2 optimum** rather than the ST-RAE
+optimum, deliberately, to buy a second differently-placed vector for `intersect`:
+
+| endpoint | board ST-RAE | board R2 | board Spearman | CV expected | ratio |
+|:--|--:|--:|--:|--:|--:|
+| CYP1A2 | 0.6559 | 0.4334 | 0.7050 | 0.8051 | 0.815 |
+| CYP2C9 | 0.5975 | 0.5660 | 0.7658 | 0.6144 | 0.972 |
+| CYP2D6 | 0.8902 | 0.2230 | 0.3610 | 0.9158 | 0.972 |
+| CYP3A4 | 0.6725 | 0.5338 | 0.7683 | 0.4854 | **1.385** |
+| macro | **0.7040** | 0.4390 | 0.6500 | 0.7052 | 1.000 |
+
+**CYP2D6 went from R2 −0.742 to +0.223** — the catastrophic placement is gone, and that
+single endpoint carries the macro gain. **But CYP3A4 got measurably worse** (ratio 1.385,
+ST-RAE +0.187 over CV) from being pushed to `k = rho` it did not need, having already been
+at 96% of its ceiling. Placement effort on an already-well-placed endpoint is a **cost, not
+a no-op** — apply the correction per endpoint, gated on its measured `recoverable`, never
+uniformly across the board.
+
+Macro landing on the CV prediction (0.7040 against 0.7052) is partly cancellation rather
+than uniform accuracy: CYP1A2 over-performed and CYP3A4 under-performed by similar amounts.
+A macro-only comparison would have hidden both.
+
+**With two scored submissions, `intersect` now solves three endpoints cleanly** —
+CYP1A2 4.378/1.080, CYP2C9 4.871/1.200, CYP3A4 4.856/1.340, all with `disagreement` under
+0.005 pIC50 units, replacing the single-submission ST-RAE sign fallback.
+
+**CYP2D6 does not solve, and the failure is a real finding about the method.** Submission
+87's own board R2 (0.223) **exceeds the ceiling implied by its own Spearman** under
+`pearson_from_spearman` (0.361 → pearson 0.376 → ceiling 0.141). `intersect` correctly
+refuses rather than returning a number from an impossible premise. The only consistent
+reading is that CYP2D6's true blind Pearson is **at least 0.472** — the bivariate-normal
+Spearman-to-Pearson conversion underestimates it by close to 30%, because CYP2D6's ordering
+is far weaker than the other endpoints' (Spearman 0.34–0.36 against 0.70–0.78) and weak
+correlations are where a skewed, truncated pIC50 distribution departs furthest from
+normality. **Treat `pearson_from_spearman` as a lower bound on CYP2D6, not a point
+estimate.**
+
+**Structural exclusion is keyed on the InChIKey connectivity block, never on canonical
+SMILES.** `external.inchikey_skeleton` / `skeleton_keys`, used by every `exclude_smiles`
+path in `aux_training`. Canonical SMILES distinguishes stereoisomers, tautomers and salt
+forms that are the *same compound* for leakage purposes, so it silently under-removes. The
+exposure is measured, not theoretical: rekeying collapses 451 records in the Veith CYP2D6
+arm, 140 in ChEMBL's and 47 in Tox21's, and switching the union matrix's exclusion to the
+skeleton key removed **184 more compounds (1,083 labels)** than SMILES matching did.
+
+On the current snapshots the two keys happen to agree on *blind-set* overlap — 7 either way,
+one compound each in ChEMBL-CYP1A2, ChEMBL-CYP2C19 and the three Tox21 arms. That agreement
+is luck rather than a property to rely on: the dataset has been amended mid-challenge
+before, and the 960 source records that match a *training* compound only under the skeleton
+key show the keys do diverge on this data. Audited retrospectively,
+`05_auxiliary_data`'s shipped corpus is clean under the stricter key (zero blind-set and
+zero training skeletons), so no past result is affected.
+
+Rows RDKit can parse but not serialise to InChI keep a null key and are retained rather than
+dropped — silently discarding public training data is a worse failure than carrying a row no
+exclusion can match.
+
+**The public sources, and what each is actually for.** Three downloaders, all writing dated
+snapshots under `data/external/` (`cyp.external` for Veith, `cyp.chembl`, `cyp.tox21`).
+Assembled by `aux_training.full_union_matrix` into **24,718 compounds x 16 heads x 125,193
+labels**, each source on its own head at its own scale — never merged into a scored column,
+which is what makes a heterogeneous source safe to use at all.
+
+| source | compounds | what it uniquely supplies |
+|:--|--:|:--|
+| Veith qHTS pIC50 | ~12,900 | the base corpus |
+| Veith `max_response` | same | efficacy at 100% coverage vs ~50% for potency |
+| ChEMBL 37 (5 isoforms) | 41,403 | **14,899 new skeletons**; no low-end range |
+| Tox21 P450-Glo (3 isoforms) | 4,893 | **~2,400 explicit inactives per isoform** |
+
+Two of the blog's claims about these did **not** reproduce and are corrected in the module
+docstrings. Tox21 is described there as weak-inhibitor-rich (median pIC50 4.76); ours sits at
+**4.92-5.07** with essentially nothing below 4.0, so its value is the confirmed negatives —
+which no other source has at all — not a lower median. And ChEMBL's cross-protocol
+disagreement, the stated reason to avoid it, is **0.18-0.50 log units** here rather than the
+feared >1, with only 76-267 compounds per isoform even carrying repeats after the
+`=`-relation and assay-type filters.
+
+**The challenge's own unused arms are the cheapest lever and target the right endpoint.**
+`aux_training.challenge_auxiliary_matrix` — 12 heads, 22,081 labels, no download, same lab
+and protocol as the scored labels. TDI-condition pIC50 lifts CYP3A4 coverage from 2,335 to
+**3,583 (+53%)** and brings 1,240 compounds the direct-inhibition table does not contain.
+Emax is the one readout with CYP2D6-specific signal: its *direct-inhibition* variant
+correlates **+0.770** (Spearman) with CYP2D6 potency against −0.39 to −0.46 on the other
+three isoforms. **The blog's cited 0.555 is the same quantity's Pearson** (0.5546 measured
+here, recorded in `experiments/05_auxiliary_data/emax_summary.csv`), not a different or
+weaker variant — an earlier version of this file claimed it was the TDI-condition variant
+and that we had beaten it, which was a Spearman-against-Pearson comparison. Use the direct
+variant, and state which correlation you mean whenever you quote a number for it.
+
+**Emax cannot be a model feature, by either route — measured, do not re-attempt.**
+`notebooks/08_emax_two_stage.py` → `experiments/08_emax_two_stage/`. The blind test set is
+`Molecule_Name,SMILES`, so Emax cannot be an input column directly; the obvious repair is
+two-stage (predict Emax from structure, feed the prediction into the CYP2D6 model). Measured
+on 15 scaffold folds, LightGBM/ECFP4-2048, scored in Spearman because ordering is the target:
+
+| arm | CYP2D6 Spearman | vs baseline |
+|:--|--:|--:|
+| baseline (fingerprints only) | 0.3274 | — |
+| + **oracle** Emax (measured) | 0.8137 | +0.486 |
+| + **predicted** Emax (stage 1 in-fold) | 0.2296 | **−0.098** |
+
+The oracle arm is unattainable by construction and the realistic arm is **worse than doing
+nothing**. The cause is in the coverage table: Emax and pIC50 are **perfectly co-measured on
+all four isoforms** — zero compounds carry one without the other, because both fall out of
+the same fitted dose-response curve. So stage 1 trains on the identical rows stage 2 does,
+gains no new coverage, and predicts Emax at only Spearman ~0.207 — barely better than the
+0.327 at which we already predict pIC50 itself. Feeding that noisy column to a tree costs
+splits that fingerprint bits would have used.
+
+The general rule, which generalises past Emax: **an auxiliary variable is usable as a
+two-stage feature only when it is more predictable from structure than the target is.**
+Correlation with the target is necessary and nowhere near sufficient. Read the coverage
+table before the correlation table. This does *not* affect Emax as an auxiliary **target**
+(an extra multitask head, which is how 05 used it) — a head costs nothing at prediction time
+and cannot inject noise into the scored endpoint's features.
+
+**`max_response` is the cheapest real gain in the public data, and needs no new download.**
+Their union FeatureSet's argument is that the qHTS panel's efficacy readout — percent
+change from control at the top tested concentration — is recorded for *every* screened
+compound, where a pIC50 exists only where a curve fitted. Measured on our own snapshot that
+is **100% coverage against ~50%**, and it doubles the pretraining label count from 38,375
+to 77,602. It is the readout carrying the inactive half of the library, which is the
+low-activity region our hit-enriched labels never reach, and its correlation with challenge
+pIC50 is strongest on CYP2D6 (-0.569), the endpoint that resists everything else.
+`external.load_pubchem` now returns it, clipped to `constants.MAX_RESPONSE_CLIP` — a fixed
+window rather than a percentile, because the positive tail differs by two orders of
+magnitude across isoforms and a percentile cut would keep CYP3A4's artifacts while removing
+CYP2D6's real signal. `aux_training.public_union_matrix` adds one head per isoform.
+
 ## Lessons carried from the PXR challenge
 
 Hard-won on a completed blind challenge ([repo](https://github.com/adlvdl/pxr_challenge), [blog](https://www.delavega.ai/blog.html)). They cost real leaderboard places; do not relearn them.
