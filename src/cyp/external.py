@@ -165,6 +165,45 @@ def _read_raw(isoform: str, snapshot: str | None = None) -> pl.DataFrame:
     return _strip_metadata_rows(pl.read_csv(path, infer_schema_length=0, ignore_errors=True))
 
 
+def _max_response(raw: pl.DataFrame) -> pl.Series:
+    """Efficacy at the top tested concentration, normalised across both schemas.
+
+    The 2007 batch reports this outright as ``Max_Response``. AID 410 does not, so
+    it is rebuilt from the readouts that are there, in descending order of how
+    directly each measures the same quantity:
+
+    1. the activity at the highest tested concentration -- the literal definition,
+       present for 67% of rows;
+    2. ``Hill Sinf``, the fitted asymptote, which correlates 0.973 with (1) where
+       both exist and covers a different 56%;
+    3. the most extreme activity observed anywhere on the curve, which is a weaker
+       claim but is never missing.
+
+    Coalescing the three reaches 100% coverage, which is the whole reason for
+    preferring this readout over pIC50 -- a column that is null for the inactive
+    half of the library would carry none of the signal this is here to supply.
+    """
+    if "Max_Response" in raw.columns:
+        return raw["Max_Response"].cast(pl.Float64, strict=False)
+
+    # Deposited in ascending concentration order, so the last column is the top dose.
+    activity = [c for c in raw.columns if c.startswith("Activity at")]
+    if not activity:
+        raise ValueError("no Max_Response and no per-concentration activity columns")
+    numeric = raw.select([pl.col(c).cast(pl.Float64, strict=False) for c in activity])
+    return numeric.select(
+        pl.coalesce(
+            [
+                pl.col(activity[-1]),
+                raw["Hill Sinf"].cast(pl.Float64, strict=False)
+                if "Hill Sinf" in raw.columns
+                else pl.lit(None, dtype=pl.Float64),
+                pl.min_horizontal(pl.all()),
+            ]
+        ).alias("max_response")
+    ).to_series()
+
+
 def load_pubchem(isoform: str, snapshot: str | None = None) -> pl.DataFrame:
     """One isoform's qHTS assay, normalised across the two deposition schemas.
 
@@ -184,6 +223,11 @@ def load_pubchem(isoform: str, snapshot: str | None = None) -> pl.DataFrame:
         - ``is_inactive`` -- explicitly measured as having no effect up to the top
           concentration. These carry a null ``pIC50`` by construction and are the
           censored observations `auxiliary.censored_labels` consumes.
+        - ``max_response`` -- efficacy at the top tested concentration, percent
+          change from control, clipped to `constants.MAX_RESPONSE_CLIP`. Negative
+          for inhibition. Unlike ``pIC50`` this is present for every screened
+          compound, so it is the column that carries the inactive half of the
+          library rather than dropping it.
     """
     if isoform not in C.PUBCHEM_AIDS:
         raise ValueError(
@@ -212,6 +256,7 @@ def load_pubchem(isoform: str, snapshot: str | None = None) -> pl.DataFrame:
         potency_molar.alias("_potency_molar"),
         is_inhibitor.fill_null(False).alias("is_inhibitor"),
         is_inactive.fill_null(False).alias("is_inactive"),
+        _max_response(raw).clip(*C.MAX_RESPONSE_CLIP).alias("max_response"),
     )
 
     # A potency is only meaningful where the curve describes inhibition, so the
@@ -247,6 +292,68 @@ def standardise_smiles(smiles: str) -> str | None:
         return Chem.MolToSmiles(largest)
     except Exception:
         return None
+
+
+def inchikey_skeleton(smiles: str) -> str | None:
+    """InChIKey connectivity block for the largest fragment, or None if unparseable.
+
+    **The correct key for deciding whether two records are the same compound**, and
+    the one every leakage check in this repo uses. Canonical SMILES is a weaker key:
+    it distinguishes stereoisomers, tautomers and charge states that the InChIKey's
+    first block treats as one structure. A blind-set compound deposited elsewhere as
+    its enantiomer, its hydrochloride or a different tautomer is the *same molecule*
+    for the purpose of "did the model already see this", and SMILES matching misses
+    every one of those.
+
+    The exposure is real rather than theoretical. Measured on the current snapshots,
+    hundreds of records per source collapse when rekeyed -- 451 in the Veith CYP2D6
+    arm, 140 in ChEMBL's, 47 in Tox21's. That none of them happened to be a blind-set
+    compound on this particular snapshot is luck, not a property worth relying on;
+    the dataset has been amended mid-challenge before.
+
+    The full InChIKey is *not* used, because its second block encodes stereochemistry
+    and protonation -- exactly the distinctions that should not separate two records
+    of one compound here. The connectivity block alone is the right granularity.
+    """
+    from rdkit import Chem, RDLogger
+
+    RDLogger.DisableLog("rdApp.*")
+    molecule = Chem.MolFromSmiles(smiles) if isinstance(smiles, str) else None
+    if molecule is None:
+        return None
+    fragments = Chem.GetMolFrags(molecule, asMols=True, sanitizeFrags=False)
+    if not fragments:
+        return None
+    largest = max(fragments, key=lambda fragment: fragment.GetNumHeavyAtoms())
+    try:
+        return Chem.MolToInchiKey(largest).split("-")[0]
+    except Exception:
+        # A record RDKit can parse but not serialise to InChI. Excluding it from a
+        # leakage check would be the wrong failure direction, so the caller sees the
+        # null and can fall back to the SMILES key for that row.
+        return None
+
+
+def skeleton_keys(smiles: list[str]) -> set[str]:
+    """InChIKey skeletons for a list of SMILES, nulls dropped.
+
+    The set to exclude against. Build it from the challenge structures and filter
+    every public source through it.
+    """
+    keys = {inchikey_skeleton(s) for s in smiles}
+    keys.discard(None)
+    return keys
+
+
+def add_skeleton(frame: pl.DataFrame, column: str = "SMILES") -> pl.DataFrame:
+    """Add an ``inchikey_skeleton`` column, keeping rows RDKit cannot key.
+
+    Unkeyable rows are retained with a null rather than dropped: they are a handful
+    of malformed depositions, and silently removing public training data is a worse
+    outcome than carrying a row that no exclusion can match.
+    """
+    keys = [inchikey_skeleton(s) for s in frame[column].to_list()]
+    return frame.with_columns(pl.Series("inchikey_skeleton", keys))
 
 
 def add_standard_smiles(frame: pl.DataFrame, column: str = "SMILES") -> pl.DataFrame:
@@ -323,18 +430,22 @@ def overlap_with_challenge(
 ) -> dict[str, int]:
     """How many public compounds are the same structure as a challenge compound.
 
+    Matched on InChIKey connectivity block, so a compound deposited elsewhere as its
+    enantiomer, a different tautomer or a salt still counts as shared. Canonical
+    SMILES under-reports this: measured on the current snapshots, 451 Veith CYP2D6
+    records, 140 ChEMBL and 47 Tox21 collapse onto another record when rekeyed.
+
     Exact-structure overlap is the leak that matters least (it is easy to remove)
     and the one worth reporting first, because a large number here means the public
     set is partly a copy of the training set rather than new information.
     """
-    standard = {standardise_smiles(s) for s in challenge_smiles}
-    standard.discard(None)
-    public_set = set(public[column].to_list())
+    challenge_keys = skeleton_keys(challenge_smiles)
+    public_keys = skeleton_keys(public[column].to_list())
     return {
-        "n_public": len(public_set),
-        "n_challenge": len(standard),
-        "n_shared": len(public_set & standard),
-        "n_public_only": len(public_set - standard),
+        "n_public": len(public_keys),
+        "n_challenge": len(challenge_keys),
+        "n_shared": len(public_keys & challenge_keys),
+        "n_public_only": len(public_keys - challenge_keys),
     }
 
 

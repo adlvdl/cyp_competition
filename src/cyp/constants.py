@@ -96,6 +96,77 @@ PUBCHEM_AIDS: dict[str, int] = {
 
 PUBCHEM_FILE_TEMPLATE = "pubchem-qhts-{isoform}.csv"
 
+# Efficacy at the top tested concentration, as a percent change from control, is
+# recorded for *every* screened compound -- unlike pIC50, which only exists where a
+# curve fitted (~50% of rows). That makes it the qHTS panel's only readout carrying
+# the inactive half of the library, which is exactly the low-activity region the
+# challenge's hit-enriched labels never reach. Inhibition is negative.
+#
+# The clip window is fixed rather than percentile-based, and deliberately so: the
+# positive tail differs by two orders of magnitude across isoforms (CYP3A4 reaches
+# +669, CYP2D6 only +106), so a percentile cut would keep CYP3A4's artifacts while
+# removing CYP2D6's real signal. Complete inhibition is -100, so -150 leaves a noise
+# margin; anything above +50 is a compound "activating" the enzyme, which at this
+# scale is fluorescence interference rather than efficacy.
+MAX_RESPONSE_CLIP = (-150.0, 50.0)
+
+# Tox21's CYP panel, deposited by NCGC as luciferase cell-based P450-Glo assays.
+# A different detection chemistry and a different compound library from the Veith
+# qHTS panel above, so it carries its own scale and belongs in its own head rather
+# than merged with Veith's numbers.
+#
+# It is here for *range*, not volume. Its actives are weak ones where the challenge
+# set is hit-enriched and ChEMBL assigns a pchembl only where a curve fitted, so it
+# covers the low-potency region both other sources miss.
+#
+# There is no CYP1A2 assay in this deposition batch. That absence is carried rather
+# than substituted: filling it from a different protocol would put two incomparable
+# scales in one column, which is the failure this per-source head layout exists to
+# avoid.
+TOX21_AIDS: dict[str, int] = {
+    "CYP2C9": 1645842,
+    "CYP2D6": 1645840,
+    "CYP3A4": 1645841,
+}
+
+TOX21_FILE_TEMPLATE = "tox21-p450glo-{isoform}.csv"
+
+# Bioluminescent CYP readouts score firefly-luciferase inhibitors as CYP inhibitors,
+# because the reporter is the thing being inhibited. Tox21 runs a counter-screen for
+# exactly this, and its call has to be honoured or the head learns luciferase
+# chemistry. Rows whose phenotype is an activator are dropped for the same reason
+# activators are dropped from the Veith panel.
+TOX21_LUCIFERASE_COUNTERSCREEN_AID = 1224835
+
+# ChEMBL target IDs for the five isoforms. CYP2C19 is not scored by the challenge but
+# the assays measure it anyway, so it rides along as a correlated auxiliary task.
+#
+# ChEMBL is the heterogeneous source: these activities are pooled across hundreds of
+# unrelated protocols, substrates and labs, and two rows for one compound routinely
+# disagree by more than a log unit. PXR found heterogeneous auxiliary data actively
+# harmful, which is why the qHTS panel was preferred for pretraining. ChEMBL earns a
+# place here only as its own separate head -- the encoder sees the chemistry, and the
+# head absorbs the scale disagreement rather than pushing it into a scored column.
+#
+# What it buys is new chemistry rather than new labels: ~24,900 skeletons with almost
+# no overlap against the challenge deck and none against the blind set.
+CHEMBL_TARGETS: dict[str, str] = {
+    "CYP1A2": "CHEMBL3356",
+    "CYP2C9": "CHEMBL3397",
+    "CYP2D6": "CHEMBL289",
+    "CYP3A4": "CHEMBL340",
+    "CYP2C19": "CHEMBL3622",
+}
+
+CHEMBL_FILE_TEMPLATE = "chembl-{isoform}.csv"
+
+#: ChEMBL assigns a `pchembl_value` only where a concentration-response curve was
+#: fitted, so nothing sits below this -- the same double selection that makes the
+#: challenge labels hit-enriched. Public potency buys ranking on new chemistry, not
+#: low-end range; range is what Tox21 is for.
+CHEMBL_PCHEMBL_FLOOR = 4.0
+
+
 
 def external_snapshot_dir(snapshot: str | None = None) -> Path:
     """Directory for an external-data snapshot, defaulting to the most recent one.
