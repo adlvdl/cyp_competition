@@ -247,3 +247,6 @@ experiments/**/cache/*_quick.*
 # from the committed external snapshot in one pretraining run; a torch checkpoint is
 # large and is not a derived summary anyone reads.
 .chemprop_pretrain/
+
+# watch_contention.sh rolling baselines -- runtime scratch, not a result.
+experiments/**/contention_snapshots/.history/

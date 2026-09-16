@@ -1,0 +1,5 @@
+endpoint,oof_rho,oof_truth_mean,oof_truth_sd,oof_pred_mean,oof_pred_sd,oof_recoverable_r2,blind_pred_mean,blind_pred_sd,ref_solve_mean,ref_solve_sd,centre_gap_vs_ref,spread_ratio_vs_ref
+CYP1A2,0.5725,4.955,1.03,4.945,0.609,0.00044,4.9,0.826,4.412,1.553,0.488,0.532
+CYP2C9,0.6897,4.581,0.782,4.565,0.559,0.00102,4.816,0.782,4.83,1.101,-0.014,0.71
+CYP2D6,0.4497,4.784,0.916,4.782,0.45,0.00178,4.53,0.531,3.107,1.599,1.423,0.332
+CYP3A4,0.8129,4.096,1.093,4.092,0.888,0.00001,4.684,0.941,4.88,1.272,-0.196,0.74
