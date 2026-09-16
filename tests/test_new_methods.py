@@ -164,9 +164,7 @@ def test_tabpfn_guard_accepts_a_token_from_dotenv(
     # Bind the real function first: referring to `tabular_models.load_env` inside
     # the replacement would resolve to the patched name and recurse.
     real_load_env = tabular_models.load_env
-    monkeypatch.setattr(
-        tabular_models, "load_env", lambda *a, **k: real_load_env(env_file)
-    )
+    monkeypatch.setattr(tabular_models, "load_env", lambda *a, **k: real_load_env(env_file))
     tabular_models._require_tabpfn_token()
     assert os.environ.get("TABPFN_TOKEN") == "tabpfn_sk_dummy"
 
@@ -263,6 +261,122 @@ def test_fit_predict_test_rejects_half_supplied_features() -> None:
         models.fit_predict_test(frame, ["CCC"], train_features=np.zeros((1, 4)))
 
 
+# ── uncertainty plumbing (notebook 06) ──────────────────────────────────────────
+#
+# No real fit here, same rationale as the module docstring: a Chemprop epoch is too
+# slow for the suite, and the CLI argument construction (which task-type an
+# uncertainty method needs, whether ensemble-size is threaded through) is what
+# actually breaks silently. An end-to-end smoke fit of all four methods was run
+# manually while building this -- see notebooks/06_uncertainty.py's own quick mode
+# for the equivalent check inside the notebook.
+
+
+def test_ensemble_uncertainty_requires_ensemble_size() -> None:
+    pytest.importorskip("chemprop")
+    from cyp import graph_models
+
+    with pytest.raises(ValueError, match="ensemble_size"):
+        graph_models.ChempropModel(uncertainty_method="ensemble", ensemble_size=1)
+
+
+def test_unknown_uncertainty_method_rejected() -> None:
+    pytest.importorskip("chemprop")
+    from cyp import graph_models
+
+    with pytest.raises(ValueError, match="uncertainty_method"):
+        graph_models.ChempropModel(uncertainty_method="bogus")
+
+
+def test_mve_task_type_overrides_plain_regression() -> None:
+    pytest.importorskip("chemprop")
+    from cyp import graph_models
+
+    model = graph_models.ChempropModel(uncertainty_method="mve")
+    args = model._base_train_args("target")
+    idx = args.index("--task-type")
+    assert args[idx + 1] == "regression-mve"
+
+
+def test_evidential_task_type_overrides_plain_regression() -> None:
+    pytest.importorskip("chemprop")
+    from cyp import graph_models
+
+    model = graph_models.ChempropModel(uncertainty_method="evidential")
+    args = model._base_train_args("target")
+    idx = args.index("--task-type")
+    assert args[idx + 1] == "regression-evidential"
+
+
+def test_ensemble_and_dropout_keep_plain_regression_task_type() -> None:
+    """Ensemble and dropout read out of an ordinary regression head -- disagreement
+    across checkpoints, or across dropout-active resamples -- so unlike mve/evidential
+    they must not change --task-type."""
+    pytest.importorskip("chemprop")
+    from cyp import graph_models
+
+    for method in ("ensemble", "dropout"):
+        kwargs = {"uncertainty_method": method}
+        if method == "ensemble":
+            kwargs["ensemble_size"] = 4
+        model = graph_models.ChempropModel(**kwargs)
+        args = model._base_train_args("target")
+        idx = args.index("--task-type")
+        assert args[idx + 1] == "regression"
+
+
+def test_ensemble_size_only_passed_at_train_time_for_ensemble_method() -> None:
+    pytest.importorskip("chemprop")
+    from cyp import graph_models
+
+    plain = graph_models.ChempropModel()
+    assert "--ensemble-size" not in plain._base_train_args("target")
+
+    ensembled = graph_models.ChempropModel(uncertainty_method="ensemble", ensemble_size=4)
+    args = ensembled._base_train_args("target")
+    idx = args.index("--ensemble-size")
+    assert args[idx + 1] == "4"
+
+
+def test_predict_with_uncertainty_requires_uncertainty_method_set() -> None:
+    pytest.importorskip("chemprop")
+    from cyp import graph_models
+
+    model = graph_models.ChempropModel()
+    with pytest.raises(ValueError, match="uncertainty_method"):
+        model.predict(["CCO"], return_uncertainty=True)
+
+
+def test_multitarget_predict_with_uncertainty_requires_uncertainty_method_set() -> None:
+    pytest.importorskip("chemprop")
+    from cyp import graph_models
+
+    model = graph_models.ChempropMultitargetModel(targets=["a", "b"])
+    with pytest.raises(ValueError, match="uncertainty_method"):
+        model.predict(["CCO"], return_uncertainty=True)
+
+
+def test_multitarget_mve_task_type_overrides_plain_regression() -> None:
+    pytest.importorskip("chemprop")
+    from cyp import graph_models
+
+    model = graph_models.ChempropMultitargetModel(targets=["a", "b"], uncertainty_method="mve")
+    args = model._base_train_args("ignored")
+    idx = args.index("--task-type")
+    assert args[idx + 1] == "regression-mve"
+
+
+def test_model_path_args_point_at_the_checkpoint_directory() -> None:
+    """`--model-paths` must be the directory, not a specific `model_0/best.pt` file --
+    an ensemble writes `model_0`, `model_1`, ... and only the directory form lets
+    chemprop discover every checkpoint for the ensemble uncertainty estimator."""
+    pytest.importorskip("chemprop")
+    from cyp import graph_models
+
+    model = graph_models.ChempropModel(model_dir=graph_models.Path("/tmp/some_model_dir"))
+    args = model._model_path_args()
+    assert args == ["--model-paths", "/tmp/some_model_dir"]
+
+
 # ── probability thresholding ───────────────────────────────────────────────────
 
 
@@ -309,9 +423,7 @@ def test_lightgbm_fits_after_fingerprint_computation() -> None:
     assert X.shape[0] == 4
 
     rng = np.random.default_rng(0)
-    lgb.LGBMRegressor(n_estimators=5, verbose=-1).fit(
-        rng.random((50, 10)), rng.random(50)
-    )
+    lgb.LGBMRegressor(n_estimators=5, verbose=-1).fit(rng.random((50, 10)), rng.random(50))
 
 
 def test_cyp_import_loads_lightgbm_first() -> None:
@@ -420,13 +532,8 @@ def test_tabpfn_budget_warns_between_budget_and_model_limit() -> None:
 
 def test_tabpfn_default_stays_under_its_own_budget() -> None:
     """Guards the measured numbers against a careless bump."""
-    assert (
-        tabular_models.TABPFN_MAX_FEATURES <= tabular_models._TABPFN_FEATURE_BUDGET
-    )
-    assert (
-        tabular_models.TABPFN_MAX_FEATURES
-        <= tabular_models.TABPFN_MODEL_FEATURE_LIMIT
-    )
+    assert tabular_models.TABPFN_MAX_FEATURES <= tabular_models._TABPFN_FEATURE_BUDGET
+    assert tabular_models.TABPFN_MAX_FEATURES <= tabular_models.TABPFN_MODEL_FEATURE_LIMIT
     assert tabular_models.TABPFN_N_ESTIMATORS <= 4
 
 
@@ -499,3 +606,30 @@ def test_openmp_guard_is_quiet_when_alone(monkeypatch: pytest.MonkeyPatch) -> No
         warnings.simplefilter("always")
         tabular_models._warn_if_openmp_conflict("TabICL")
     assert not caught
+
+
+def test_checkpoint_args_repeats_path_for_ensemble_size():
+    """Chemprop's `--checkpoint` takes `nargs="+"` and, when given at all, silently
+    sets `ensemble_size = len(checkpoint paths)` (`chemprop/cli/train.py`,
+    `train_model`) -- so warm-starting a 4-member ensemble from one pretrained
+    checkpoint needs that path listed 4 times, not once. Passing it once collapsed
+    ensemble_size to 1 with only a log warning, which is exactly what broke
+    notebook 06's first full run: the ensemble arm trained a single checkpoint and
+    the later `predict --uncertainty-method ensemble` call raised, since chemprop
+    refuses ensemble uncertainty from fewer than two models."""
+    pytest.importorskip("chemprop")
+    from cyp import graph_models
+
+    ckpt = graph_models.Path("/tmp/some_checkpoint/model_0/best.pt")
+
+    ensembled = graph_models.ChempropModel(uncertainty_method="ensemble", ensemble_size=4)
+    args = ensembled._checkpoint_args(ckpt)
+    assert args == ["--checkpoint"] + [str(ckpt)] * 4
+
+    plain = graph_models.ChempropModel()
+    args = plain._checkpoint_args(ckpt)
+    assert args == ["--checkpoint", str(ckpt)]
+
+    mve = graph_models.ChempropModel(uncertainty_method="mve")
+    args = mve._checkpoint_args(ckpt)
+    assert args == ["--checkpoint", str(ckpt)]

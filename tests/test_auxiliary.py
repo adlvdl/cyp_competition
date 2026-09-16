@@ -399,3 +399,166 @@ def test_multitarget_folds_argument_fits_only_the_requested_fold(monkeypatch):
 
     assert len(fits) == 1, f"expected one fit for one fold, got {len(fits)}"
     assert oof["fold"].unique().to_list() == [1]
+
+
+def test_run_cv_pretrained_uncertainty_requires_uncertainty_method():
+    """`uncertainty=True` without a chemprop `uncertainty_method` has nothing to
+    report -- catching this at call time is cheaper than discovering it 25 folds in
+    when chemprop's own predict call has nothing to return."""
+    frames = {"e1": pl.DataFrame({"Molecule_Name": ["m1"], "SMILES": ["CCO"], "y_true": [5.0]})}
+    with pytest.raises(ValueError, match="uncertainty_method"):
+        aux_training.run_cv_pretrained(frames, pl.DataFrame({"smiles_std": []}), uncertainty=True)
+
+
+def test_run_cv_pretrained_uncertainty_adds_y_unc_column(monkeypatch, tmp_path):
+    """When `uncertainty=True`, the OOF frame must carry a `y_unc` value per row,
+    taken from the model's own `return_uncertainty=True` predict path rather than
+    silently dropped or left as the point prediction twice over (notebook 06's
+    calibration screen reads this column directly)."""
+    from cyp import cv, graph_models
+
+    frames = {
+        "e1": pl.DataFrame(
+            {
+                "Molecule_Name": [f"m{i}" for i in range(12)],
+                "SMILES": [
+                    "c1ccccc1CCO",
+                    "c1ccncc1CC",
+                    "C1CCCCC1CO",
+                    "c1ccc2ccccc2c1C",
+                    "c1cc(F)ccc1CN",
+                    "C1CCNCC1CC",
+                    "c1ccsc1CCC",
+                    "c1ccoc1CN",
+                    "C1CCOC1CCO",
+                    "c1cnc2ccccc2c1",
+                    "C1CN(C)CCN1C",
+                    "c1ccc(Cl)cc1CO",
+                ],
+                "y_true": [5.0 + 0.1 * i for i in range(12)],
+                "y_lower": [4.8 + 0.1 * i for i in range(12)],
+                "y_upper": [5.2 + 0.1 * i for i in range(12)],
+            }
+        )
+    }
+    _, table = cv.shared_scaffold_folds(frames, n_outer=1, n_inner=2)
+
+    class _StubModel:
+        def __init__(self, targets, pretrain_dir=None, **kwargs):
+            self.targets = list(targets)
+
+        def fit(self, smiles, y, **kwargs):
+            return self
+
+        def predict(self, smiles, return_uncertainty=False):
+            n = len(smiles)
+            preds = np.zeros((n, len(self.targets)))
+            if not return_uncertainty:
+                return preds
+            unc = np.full((n, len(self.targets)), 0.42)
+            return preds, unc
+
+    monkeypatch.setattr(graph_models, "ChempropMultitargetModel", _StubModel)
+
+    # A dummy checkpoint file makes `run_cv_pretrained` skip pretraining entirely --
+    # this test is about the OOF/uncertainty plumbing, not the pretrain step. The
+    # path must match exactly what run_cv_pretrained derives from method_name.
+    monkeypatch.setattr(aux_training.C, "PROJECT_ROOT", tmp_path)
+    pretrain_dir = tmp_path / ".chemprop_pretrain" / "pretrain"
+    (pretrain_dir / "model_0").mkdir(parents=True)
+    (pretrain_dir / "model_0" / "best.pt").touch()
+
+    oof = aux_training.run_cv_pretrained(
+        frames,
+        pl.DataFrame({"smiles_std": [], "e1": []}),
+        method_name="pretrain",
+        assignments=table,
+        folds=[1],
+        uncertainty=True,
+        uncertainty_method="mve",
+    )
+
+    assert "y_unc" in oof.columns
+    assert (oof["y_unc"] == 0.42).all()
+
+
+def test_run_cv_ensemble_weighting_produces_paired_uniform_and_ivw_rows(monkeypatch, tmp_path):
+    """`run_cv_ensemble_weighting` must emit exactly two methods, on identical
+    (fold, compound, endpoint) keys, built from one fit's ensemble members -- not
+    two separate CV runs that happen to share folds. The IVW weights should also
+    actually respond to member disagreement: a compound where checkpoints agree
+    should score close to the uniform average, and shouldn't crash when checkpoints
+    agree exactly (the variance floor guards the divide)."""
+    from cyp import cv, graph_models
+
+    frames = {
+        "e1": pl.DataFrame(
+            {
+                "Molecule_Name": [f"m{i}" for i in range(12)],
+                "SMILES": [
+                    "c1ccccc1CCO",
+                    "c1ccncc1CC",
+                    "C1CCCCC1CO",
+                    "c1ccc2ccccc2c1C",
+                    "c1cc(F)ccc1CN",
+                    "C1CCNCC1CC",
+                    "c1ccsc1CCC",
+                    "c1ccoc1CN",
+                    "C1CCOC1CCO",
+                    "c1cnc2ccccc2c1",
+                    "C1CN(C)CCN1C",
+                    "c1ccc(Cl)cc1CO",
+                ],
+                "y_true": [5.0 + 0.1 * i for i in range(12)],
+                "y_lower": [4.8 + 0.1 * i for i in range(12)],
+                "y_upper": [5.2 + 0.1 * i for i in range(12)],
+            }
+        )
+    }
+    _, table = cv.shared_scaffold_folds(frames, n_outer=1, n_inner=2)
+
+    class _StubModel:
+        def __init__(
+            self, targets, pretrain_dir=None, uncertainty_method=None, ensemble_size=1, **kw
+        ):
+            self.targets = list(targets)
+            self.ensemble_size = ensemble_size
+
+        def fit(self, smiles, y, **kwargs):
+            return self
+
+        def predict_ensemble_members(self, smiles):
+            n = len(smiles)
+            # Every checkpoint agrees exactly -- exercises the variance floor.
+            return np.full((n, len(self.targets), self.ensemble_size), 5.0)
+
+    monkeypatch.setattr(graph_models, "ChempropMultitargetModel", _StubModel)
+    monkeypatch.setattr(aux_training.C, "PROJECT_ROOT", tmp_path)
+    pretrain_dir = tmp_path / ".chemprop_pretrain" / "ensemble_weighting"
+    (pretrain_dir / "model_0").mkdir(parents=True)
+    (pretrain_dir / "model_0" / "best.pt").touch()
+
+    oof = aux_training.run_cv_ensemble_weighting(
+        frames,
+        pl.DataFrame({"smiles_std": [], "e1": []}),
+        ensemble_size=3,
+        assignments=table,
+        folds=[1],
+    )
+
+    assert set(oof["method"].unique().to_list()) == {"ensemble_uniform", "ensemble_ivw"}
+
+    def _keys(method: str) -> set:
+        subset = oof.filter(pl.col("method") == method)
+        names = subset["Molecule_Name"].to_list()
+        endpoints = subset["endpoint"].to_list()
+        return set(zip(names, endpoints, strict=True))
+
+    assert _keys("ensemble_uniform") == _keys("ensemble_ivw")
+    # All checkpoints agreed exactly, so IVW must reduce to the uniform average.
+    uniform_preds = oof.filter(pl.col("method") == "ensemble_uniform").sort("Molecule_Name")[
+        "y_pred"
+    ]
+    ivw_preds = oof.filter(pl.col("method") == "ensemble_ivw").sort("Molecule_Name")["y_pred"]
+    assert (uniform_preds == ivw_preds).all()
+    assert (uniform_preds == 5.0).all()

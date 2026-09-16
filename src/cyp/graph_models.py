@@ -201,6 +201,15 @@ class ChempropModel(SmilesModelMixin):
     assumed to help.
     """
 
+    #: pred_type -> chemprop --task-type, for the uncertainty-bearing regression
+    #: heads. "regression" stays plain regression unless an uncertainty method needs
+    #: a different head shape (mve, evidential); ensemble and dropout both read out
+    #: of an ordinary regression head, so they do not appear here.
+    _UNCERTAINTY_TASK_TYPE = {
+        "mve": "regression-mve",
+        "evidential": "regression-evidential",
+    }
+
     def __init__(
         self,
         pred_type: str = "regression",
@@ -219,6 +228,8 @@ class ChempropModel(SmilesModelMixin):
         init_lr: float = 1e-4,
         max_lr: float = 1e-3,
         final_lr: float = 1e-4,
+        uncertainty_method: str | None = None,
+        ensemble_size: int = 1,
     ) -> None:
         """
         Args:
@@ -241,9 +252,27 @@ class ChempropModel(SmilesModelMixin):
             init_lr: Initial LR for the one-cycle schedule.
             max_lr: Peak LR for the one-cycle schedule.
             final_lr: Final LR for the one-cycle schedule.
+            uncertainty_method: None (point predictions only), "mve", "evidential",
+                "ensemble" or "dropout". "mve"/"evidential" change the FFN head and
+                loss function (`_UNCERTAINTY_TASK_TYPE`) and must be requested at
+                training time. "ensemble" requires `ensemble_size > 1` and reads
+                disagreement among those checkpoints. "dropout" needs no training-time
+                change -- it resamples an ordinary model with dropout left on at
+                inference -- so it can be requested against a model trained with
+                `uncertainty_method=None`, including an already-fitted checkpoint.
+            ensemble_size: Number of checkpoints chemprop trains in one `train` call.
+                Only meaningful (and only multiplies fit cost) when
+                `uncertainty_method="ensemble"`; left at 1 otherwise.
         """
         if pred_type not in ("regression", "classification"):
             raise ValueError("pred_type must be 'regression' or 'classification'")
+        if uncertainty_method not in (None, "mve", "evidential", "ensemble", "dropout"):
+            raise ValueError(
+                "uncertainty_method must be one of None, 'mve', 'evidential', "
+                f"'ensemble', 'dropout' -- got {uncertainty_method!r}"
+            )
+        if uncertainty_method == "ensemble" and ensemble_size < 2:
+            raise ValueError("uncertainty_method='ensemble' needs ensemble_size >= 2")
         tmp = Path(tempfile.gettempdir())
         # Default directories are namespaced by backbone so a scratch run and a
         # CheMeleon run in the same session cannot overwrite each other's checkpoints.
@@ -264,7 +293,42 @@ class ChempropModel(SmilesModelMixin):
         self.init_lr = init_lr
         self.max_lr = max_lr
         self.final_lr = final_lr
+        self.uncertainty_method = uncertainty_method
+        self.ensemble_size = ensemble_size
         self.target_col: str = "target"
+
+    def _task_type(self) -> str:
+        """`--task-type`, switched to the uncertainty-bearing head (mve/evidential)
+        when `uncertainty_method` calls for one; plain otherwise. Shared by both the
+        single- and multi-target `_base_train_args`, so the mapping only lives once."""
+        uncertainty_task_type = self._UNCERTAINTY_TASK_TYPE.get(self.uncertainty_method)
+        if self.pred_type == "regression" and uncertainty_task_type is not None:
+            return uncertainty_task_type
+        return self.pred_type
+
+    def _checkpoint_args(self, pretrain_ckpt: Path) -> list[str]:
+        """`--checkpoint`, repeated once per ensemble member when warm-starting an
+        ensemble from a single pretrained checkpoint.
+
+        Chemprop's `train_model` reads `--ensemble-size` from `len(--checkpoint
+        paths)` whenever `--checkpoint` is given at all (`chemprop/cli/train.py`,
+        `train_model`): passing the checkpoint once silently collapses
+        `ensemble_size=4` down to 1, with only a log warning -- no error, so it is
+        easy to lose an entire ensemble arm to a single warm-started member without
+        noticing (this is exactly what happened while building notebook 06: an
+        `ensemble` fit trained with `ensemble_size=1` under the hood, and the later
+        `predict --uncertainty-method ensemble` call raised because chemprop refuses
+        ensemble uncertainty from a single checkpoint). Passing the same path
+        `ensemble_size` times gives every member the same warm start -- they still
+        diverge from there via each member's own random seed and data shuffling,
+        same as an ensemble trained from scratch would.
+        """
+        # argparse's --checkpoint takes nargs="+": one flag, N space-separated paths.
+        # Repeating the flag itself (`--checkpoint a --checkpoint b`) would silently
+        # keep only the last occurrence, which is the same failure mode this method
+        # exists to avoid.
+        n = self.ensemble_size if self.uncertainty_method == "ensemble" else 1
+        return ["--checkpoint", *([str(pretrain_ckpt)] * n)]
 
     def _base_train_args(self, target_col: str) -> list[str]:
         """CLI args shared between `pretrain` and `fit`."""
@@ -274,7 +338,7 @@ class ChempropModel(SmilesModelMixin):
             "--target-columns",
             target_col,
             "--task-type",
-            self.pred_type,
+            self._task_type(),
             "--accelerator",
             device(),
             "--message-hidden-dim",
@@ -298,6 +362,8 @@ class ChempropModel(SmilesModelMixin):
         ]
         if self.from_foundation:
             args += ["--from-foundation", self.from_foundation]
+        if self.uncertainty_method == "ensemble":
+            args += ["--ensemble-size", str(self.ensemble_size)]
         return args
 
     def pretrain(
@@ -402,7 +468,7 @@ class ChempropModel(SmilesModelMixin):
         # generic backbone when both are available.
         pretrain_ckpt = self.pretrain_dir / "model_0" / "best.pt"
         if pretrain_ckpt.exists():
-            args += ["--checkpoint", str(pretrain_ckpt)]
+            args += self._checkpoint_args(pretrain_ckpt)
             if self.freeze_encoder:
                 args.append("--freeze-encoder")
 
@@ -411,32 +477,70 @@ class ChempropModel(SmilesModelMixin):
         val_csv.unlink(missing_ok=True)
         return self
 
-    def predict(self, smiles_test: list[str]) -> np.ndarray:
-        """Run inference via `chemprop predict`. Returns a 1-D array.
+    #: uncertainty_method -> chemprop --uncertainty-method value at *predict* time.
+    #: "mve" and "evidential" read out of the head trained for them
+    #: (_UNCERTAINTY_TASK_TYPE); "evidential-total" is the combined
+    #: aleatoric+epistemic variance -- the single number comparable to MVE's, rather
+    #: than the epistemic/aleatoric split this comparison has no use for. "ensemble"
+    #: and "dropout" work with an ordinary regression head.
+    _UNCERTAINTY_PREDICT_METHOD = {
+        "mve": "mve",
+        "evidential": "evidential-total",
+        "ensemble": "ensemble",
+        "dropout": "dropout",
+    }
+
+    def _model_path_args(self) -> list[str]:
+        """`--model-paths`, pointed at the checkpoint dir so an ensemble's several
+        `model_i/best.pt` files are all picked up (chemprop discovers them from a
+        directory); a non-ensemble run has exactly one such file."""
+        return ["--model-paths", str(self.model_dir)]
+
+    def predict(
+        self, smiles_test: list[str], return_uncertainty: bool = False
+    ) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
+        """Run inference via `chemprop predict`. Returns a 1-D array, or
+        `(y_pred, y_unc)` when `return_uncertainty=True`.
 
         For `pred_type="classification"` these are positive-class probabilities, not
         labels -- thresholding is the caller's job, and for TDI the threshold should
         be tuned for MCC rather than left at 0.5 (see PLAN.md item 5).
+
+        `y_unc` is chemprop's native uncertainty output: a variance for "mve" and
+        "evidential", the ensemble's inter-checkpoint variance for "ensemble", and
+        the MC-dropout variance for "dropout" -- always a variance, never a stdev, to
+        match how `evaluation.py`'s calibration diagnostics (ENCE etc.) expect it.
+        Requesting this without `uncertainty_method` set raises, since there is
+        nothing chemprop can report.
         """
+        if return_uncertainty and self.uncertainty_method is None:
+            raise ValueError("return_uncertainty=True needs uncertainty_method set at construction")
         tmp = Path(tempfile.gettempdir())
         test_csv, pred_csv = tmp / "cyp_cp_test.csv", tmp / "cyp_cp_preds.csv"
-        model_pt = self.model_dir / "model_0" / "best.pt"
         _write_smiles_csv(list(smiles_test), None, test_csv, self.target_col)
-        _run_chemprop_cli(
-            [
-                "predict",
-                "--test-path",
-                str(test_csv),
-                "--model-path",
-                str(model_pt),
-                "--preds-path",
-                str(pred_csv),
+        cli_args = [
+            "predict",
+            "--test-path",
+            str(test_csv),
+            *self._model_path_args(),
+            "--preds-path",
+            str(pred_csv),
+        ]
+        if return_uncertainty:
+            cli_args += [
+                "--uncertainty-method",
+                self._UNCERTAINTY_PREDICT_METHOD[self.uncertainty_method],
             ]
-        )
-        preds = pl.read_csv(pred_csv)[self.target_col].to_numpy()
+        _run_chemprop_cli(cli_args)
+        preds_df = pl.read_csv(pred_csv)
+        preds = preds_df[self.target_col].to_numpy()
         test_csv.unlink(missing_ok=True)
         pred_csv.unlink(missing_ok=True)
-        return np.asarray(preds, dtype=float).flatten()
+        y_pred = np.asarray(preds, dtype=float).flatten()
+        if not return_uncertainty:
+            return y_pred
+        unc = preds_df[f"{self.target_col}_unc"].to_numpy()
+        return y_pred, np.asarray(unc, dtype=float).flatten()
 
 
 class ChempropChemeleonModel(ChempropModel):
@@ -585,7 +689,7 @@ class ChempropMultitargetModel(ChempropModel):
             "--target-columns",
             *self.targets,
             "--task-type",
-            self.pred_type,
+            self._task_type(),
             "--accelerator",
             device(),
             "--message-hidden-dim",
@@ -609,6 +713,8 @@ class ChempropMultitargetModel(ChempropModel):
         ]
         if self.from_foundation:
             args += ["--from-foundation", self.from_foundation]
+        if self.uncertainty_method == "ensemble":
+            args += ["--ensemble-size", str(self.ensemble_size)]
         return args
 
     def _write_wide_csv(
@@ -757,7 +863,7 @@ class ChempropMultitargetModel(ChempropModel):
         # checkpoint outranks the generic foundation backbone when both exist.
         pretrain_ckpt = self.pretrain_dir / "model_0" / "best.pt"
         if pretrain_ckpt.exists():
-            args += ["--checkpoint", str(pretrain_ckpt)]
+            args += self._checkpoint_args(pretrain_ckpt)
             if self.freeze_encoder:
                 args.append("--freeze-encoder")
 
@@ -766,25 +872,33 @@ class ChempropMultitargetModel(ChempropModel):
         val_csv.unlink(missing_ok=True)
         return self
 
-    def predict(self, smiles_test: list[str]) -> np.ndarray:
+    def predict(
+        self, smiles_test: list[str], return_uncertainty: bool = False
+    ) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
         """Predict every endpoint at once. Returns `(n_compounds, n_targets)` in
-        `self.targets` order."""
+        `self.targets` order, or `(y_pred, y_unc)` of that same shape when
+        `return_uncertainty=True` -- see `ChempropModel.predict` for what `y_unc`
+        means per method (always a variance)."""
+        if return_uncertainty and self.uncertainty_method is None:
+            raise ValueError("return_uncertainty=True needs uncertainty_method set at construction")
         tmp = Path(tempfile.gettempdir())
         test_csv, pred_csv = tmp / "cyp_cp_mt_test.csv", tmp / "cyp_cp_mt_preds.csv"
-        model_pt = self.model_dir / "model_0" / "best.pt"
         pl.DataFrame({"smiles": list(smiles_test)}).write_csv(test_csv)
 
-        _run_chemprop_cli(
-            [
-                "predict",
-                "--test-path",
-                str(test_csv),
-                "--model-path",
-                str(model_pt),
-                "--preds-path",
-                str(pred_csv),
+        cli_args = [
+            "predict",
+            "--test-path",
+            str(test_csv),
+            *self._model_path_args(),
+            "--preds-path",
+            str(pred_csv),
+        ]
+        if return_uncertainty:
+            cli_args += [
+                "--uncertainty-method",
+                self._UNCERTAINTY_PREDICT_METHOD[self.uncertainty_method],
             ]
-        )
+        _run_chemprop_cli(cli_args)
 
         preds = pl.read_csv(pred_csv)
         missing = [t for t in self.targets if t not in preds.columns]
@@ -796,4 +910,71 @@ class ChempropMultitargetModel(ChempropModel):
 
         test_csv.unlink(missing_ok=True)
         pred_csv.unlink(missing_ok=True)
+
+        if not return_uncertainty:
+            return out
+
+        unc_cols = [f"{t}_unc" for t in self.targets]
+        missing_unc = [c for c in unc_cols if c not in preds.columns]
+        if missing_unc:
+            raise RuntimeError(
+                f"chemprop predictions missing uncertainty columns {missing_unc}; "
+                f"got {preds.columns}"
+            )
+        unc = preds.select(unc_cols).to_numpy().astype(float)
+        return out, unc
+
+    def predict_ensemble_members(self, smiles_test: list[str]) -> np.ndarray:
+        """Each ensemble checkpoint's own prediction, unaveraged.
+
+        Only meaningful for `uncertainty_method="ensemble"`: chemprop's own
+        `predict` averages the checkpoints into one number and reports their
+        variance as `_unc`, which is enough to rank compounds by confidence but not
+        enough to build anything other than a uniform average from the ensemble --
+        e.g. an inverse-variance-weighted blend needs each member's own prediction.
+        Chemprop writes those to a `..._individual.csv` sidecar next to the normal
+        predictions file (`{target}_model_{i}` columns) whenever more than one
+        checkpoint is used; this reads that file instead of the averaged one.
+
+        Returns `(n_compounds, n_targets, ensemble_size)`.
+        """
+        if self.uncertainty_method != "ensemble":
+            raise ValueError(
+                "predict_ensemble_members only applies to uncertainty_method='ensemble', "
+                f"got {self.uncertainty_method!r}"
+            )
+        tmp = Path(tempfile.gettempdir())
+        test_csv, pred_csv = tmp / "cyp_cp_mt_test.csv", tmp / "cyp_cp_mt_preds.csv"
+        individual_csv = pred_csv.with_name(f"{pred_csv.stem}_individual{pred_csv.suffix}")
+        pl.DataFrame({"smiles": list(smiles_test)}).write_csv(test_csv)
+
+        _run_chemprop_cli(
+            [
+                "predict",
+                "--test-path",
+                str(test_csv),
+                *self._model_path_args(),
+                "--preds-path",
+                str(pred_csv),
+                "--uncertainty-method",
+                "ensemble",
+            ]
+        )
+
+        preds = pl.read_csv(individual_csv)
+        member_cols = {
+            target: [f"{target}_model_{i}" for i in range(self.ensemble_size)]
+            for target in self.targets
+        }
+        missing = [c for cols in member_cols.values() for c in cols if c not in preds.columns]
+        if missing:
+            raise RuntimeError(
+                f"chemprop individual predictions missing columns {missing}; got {preds.columns}"
+            )
+        out = np.stack(
+            [preds.select(member_cols[t]).to_numpy().astype(float) for t in self.targets], axis=1
+        )
+        test_csv.unlink(missing_ok=True)
+        pred_csv.unlink(missing_ok=True)
+        individual_csv.unlink(missing_ok=True)
         return out

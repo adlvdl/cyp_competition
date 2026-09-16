@@ -347,12 +347,10 @@ def public_pretraining_matrix(
     """
     from . import external
 
-    excluded: set[str] = set()
-    if exclude_smiles:
-        for smiles in exclude_smiles:
-            standard = external.standardise_smiles(smiles)
-            if standard is not None:
-                excluded.add(standard)
+    # Excluded on InChIKey connectivity block, not canonical SMILES. SMILES
+    # distinguishes stereoisomers, tautomers and salt forms that are the *same
+    # compound* for leakage purposes -- see `external.inchikey_skeleton`.
+    excluded = external.skeleton_keys(exclude_smiles) if exclude_smiles else set()
 
     wide = None
     for endpoint in endpoints:
@@ -365,14 +363,247 @@ def public_pretraining_matrix(
         )
 
     if excluded:
-        wide = wide.filter(pl.col("smiles_std").is_in(list(excluded)).not_())
+        wide = (
+            external.add_skeleton(wide, column="smiles_std")
+            .filter(
+                pl.col("inchikey_skeleton").is_in(list(excluded)).not_()
+                | pl.col("inchikey_skeleton").is_null()
+            )
+            .drop("inchikey_skeleton")
+        )
     return wide.sort("smiles_std")
+
+
+def public_union_matrix(
+    endpoints: list[str],
+    exclude_smiles: list[str] | None = None,
+    snapshot: str | None = None,
+    include_inactives: bool = True,
+    include_max_response: bool = True,
+) -> tuple[pl.DataFrame, list[str]]:
+    """`public_pretraining_matrix` widened with the qHTS efficacy readout.
+
+    The change the SuperCowPowers entry's union FeatureSet makes over what notebook
+    05 already does, and the cheapest real gain available: their argument is that
+    ``max_response`` -- percent change from control at the top tested concentration --
+    is recorded for *every* screened compound, where a pIC50 exists only where a curve
+    fitted. Measured on our own snapshot that is 100% coverage against roughly 50%,
+    so the efficacy column carries the entire inactive half of the library, which is
+    exactly the low-activity region the challenge's hit-enriched labels never reach.
+
+    Each isoform's efficacy is a separate head on its own scale rather than being
+    folded into the potency column. The two are different measurements -- efficacy is
+    negative for inhibition and is not a potency at all -- so merging them would need
+    a cross-assay correction that separate heads make unnecessary.
+
+    Args:
+        endpoints: Scored endpoint names, in the fine-tuning model's column order.
+            These occupy the first positions so a warm-start lines up head for head.
+        exclude_smiles: Challenge SMILES to remove, as in `public_pretraining_matrix`.
+        snapshot: External snapshot date.
+        include_inactives: Keep explicitly-inactive compounds in the potency columns.
+        include_max_response: Add the efficacy heads. False reproduces
+            `public_pretraining_matrix` exactly, which is the control arm.
+
+    Returns:
+        `(wide, columns)` -- the frame, and the full target order including the
+        auxiliary heads. Pass `columns` wherever the head order matters.
+    """
+    from . import external
+
+    wide = public_pretraining_matrix(
+        endpoints,
+        exclude_smiles=exclude_smiles,
+        snapshot=snapshot,
+        include_inactives=include_inactives,
+    )
+    columns = list(endpoints)
+    if not include_max_response:
+        return wide, columns
+
+    excluded = external.skeleton_keys(exclude_smiles) if exclude_smiles else set()
+
+    for endpoint in endpoints:
+        isoform = endpoint.split("_")[0]
+        name = f"{isoform}_max_response"
+        block = external.add_standard_smiles(external.load_pubchem(isoform, snapshot))
+        # A compound can appear on several plates or as several salts of one parent;
+        # the median is the robust summary, matching `pretraining_frame`.
+        block = (
+            block.filter(pl.col("max_response").is_not_null())
+            .group_by("smiles_std")
+            .agg(pl.col("max_response").median().alias(name))
+        )
+        if excluded:
+            block = (
+                external.add_skeleton(block, column="smiles_std")
+                .filter(
+                    pl.col("inchikey_skeleton").is_in(list(excluded)).not_()
+                    | pl.col("inchikey_skeleton").is_null()
+                )
+                .drop("inchikey_skeleton")
+            )
+        wide = wide.join(block, on="smiles_std", how="full", coalesce=True)
+        columns.append(name)
+
+    return wide.sort("smiles_std"), columns
+
+
+def full_union_matrix(
+    endpoints: list[str],
+    exclude_smiles: list[str] | None = None,
+    snapshot: str | None = None,
+    include_chembl: bool = True,
+    include_tox21: bool = True,
+    include_cyp2c19: bool = True,
+) -> tuple[pl.DataFrame, list[str]]:
+    """Every public source, each as its own head on its own scale.
+
+    The full version of the reference entry's union FeatureSet
+    (https://supercowpowers.github.io/workbench/blogs/cyp_challenge/), where
+    `public_union_matrix` covers only the PubChem efficacy readout. Sources are
+    *unioned as rows* and each keeps its own target column, so a compound measured by
+    two labs contributes to both heads without either scale being forced onto the
+    other.
+
+    **Why separate heads rather than a merged potency column.** On shared compounds
+    the assays correlate only 0.31-0.66 and disagree systematically in level, so
+    merging would need a cross-assay affine correction per pair. Separate heads make
+    that unnecessary: the encoder learns from every source's chemistry, and each head
+    absorbs its own source's scale. This is also what makes ChEMBL usable at all --
+    `cyp.external` documents why its heterogeneity made it a poor *pretraining
+    target*, and that objection does not apply to a head of its own.
+
+    **What each source contributes**, measured on our own snapshots rather than taken
+    from the blog:
+
+    - Veith qHTS pIC50: the base corpus, ~12,900 compounds at 4 heads.
+    - Veith ``max_response``: efficacy at the top dose, 100% coverage against ~50%
+      for potency, so it carries the inactive half of that library.
+    - ChEMBL: ~24,900 new skeletons with almost no challenge overlap. New chemistry,
+      not new labels; nothing below pIC50 4.0.
+    - Tox21: ~2,000 explicitly *inactive* compounds per isoform. Note the blog's
+      claim that its actives are weak (median 4.76) does not reproduce here -- ours
+      sit at 4.92-5.07. The confirmed negatives are the real contribution, and no
+      other source has any. No CYP1A2 assay exists in this batch.
+    - CYP2C19: an unscored fifth isoform every public panel measures anyway, free as
+      a correlated auxiliary task.
+
+    Args:
+        endpoints: Scored endpoint names, in the fine-tuning column order. These
+            occupy the first positions so a warm-start lines up head for head.
+        exclude_smiles: Challenge SMILES to remove from every source.
+        snapshot: External snapshot date.
+        include_chembl: Add the ChEMBL potency heads.
+        include_tox21: Add the Tox21 potency heads.
+        include_cyp2c19: Add CYP2C19 wherever a source measures it.
+
+    Returns:
+        `(wide, columns)` -- the frame, and the full head order.
+    """
+    from . import chembl as chembl_module
+    from . import external
+    from . import tox21 as tox21_module
+
+    wide, columns = public_union_matrix(endpoints, exclude_smiles=exclude_smiles, snapshot=snapshot)
+
+    excluded = external.skeleton_keys(exclude_smiles) if exclude_smiles else set()
+
+    def _attach(block: pl.DataFrame, name: str) -> None:
+        """Standardise, deduplicate and union one source's column onto the frame."""
+        nonlocal wide
+        block = external.add_standard_smiles(block).filter(pl.col(name).is_not_null())
+        if excluded:
+            block = (
+                external.add_skeleton(block, column="smiles_std")
+                .filter(
+                    pl.col("inchikey_skeleton").is_in(list(excluded)).not_()
+                    | pl.col("inchikey_skeleton").is_null()
+                )
+                .drop("inchikey_skeleton")
+            )
+        # Salts and stereoisomers collapse to one structure, so a median is the
+        # robust summary -- matching `external.pretraining_frame`.
+        block = block.group_by("smiles_std").agg(pl.col(name).median().alias(name))
+        wide = wide.join(block, on="smiles_std", how="full", coalesce=True)
+        columns.append(name)
+
+    isoforms = [e.split("_")[0] for e in endpoints]
+
+    if include_chembl:
+        targets = list(C.CHEMBL_TARGETS) if include_cyp2c19 else isoforms
+        for isoform in targets:
+            if isoform not in C.CHEMBL_TARGETS:
+                continue
+            name = f"{isoform}_pic50_chembl"
+            frame = chembl_module.load_chembl(isoform, snapshot)
+            if frame.height:
+                _attach(frame.rename({"pIC50": name}).select("SMILES", name), name)
+
+    if include_tox21:
+        for isoform in C.TOX21_AIDS:
+            name = f"{isoform}_pic50_tox21"
+            frame = tox21_module.load_tox21(isoform, snapshot)
+            if frame.height:
+                _attach(frame.rename({"pIC50": name}).select("SMILES", name), name)
+
+    return wide.sort("smiles_std"), columns
+
+
+def challenge_auxiliary_matrix(
+    endpoints: list[str], snapshot: str | None = None
+) -> tuple[pl.DataFrame, list[str]]:
+    """The challenge's own unused arms, as extra fine-tuning heads.
+
+    Two of the five released files carry no scored endpoint and no notebook before
+    this one used them as targets. They need no download and no cross-assay
+    correction -- same platform, same chemistry, same lab as the scored labels.
+
+    - **TDI-condition pIC50** lifts CYP3A4 coverage from 2,335 to 3,583 (+53%),
+      measured here, and brings 1,240 compounds the direct-inhibition table does not
+      contain at all.
+    - **Emax against positive control** is the one readout carrying CYP2D6-specific
+      signal: its direct-inhibition variant correlates **+0.770** (Spearman) with
+      CYP2D6 potency against -0.39 to -0.46 on the other three. For the endpoint
+      whose weak ordering caps our macro, that is the strongest auxiliary signal in
+      the release.
+
+    Both Emax variants are kept. The direct-inhibition one is stronger on every
+    isoform, but the TDI-condition one is measured under different conditions and is
+    not redundant with it.
+
+    Returns:
+        `(frame, columns)` keyed by ``Molecule_Name`` with ``SMILES``, ready to join
+        onto a fine-tuning wide frame.
+    """
+    from . import data as data_module
+
+    tdi = data_module.load_train_tdi(snapshot)
+    emax = data_module.load_train_emax(snapshot)
+
+    isoforms = [e.split("_")[0] for e in endpoints]
+    tdi_columns = [f"{i}_pIC50_TDI_condition" for i in isoforms]
+    emax_columns = [
+        f"{i}_EmaxVsPosCtrl_{condition}"
+        for i in isoforms
+        for condition in ("direct_inhibition", "TDI_condition")
+    ]
+
+    frame = tdi.select(["Molecule_Name", "SMILES", *tdi_columns]).join(
+        emax.select(["Molecule_Name", *[c for c in emax_columns if c in emax.columns]]),
+        on="Molecule_Name",
+        how="left",
+    )
+    present = [c for c in tdi_columns + emax_columns if c in frame.columns]
+    return frame, present
 
 
 def run_cv_pretrained(
     frames: dict[str, pl.DataFrame],
     pretraining: pl.DataFrame,
     method_name: str = "chemprop_pubchem_pretrained",
+    pretrain_targets: list[str] | None = None,
+    finetune_targets: pl.DataFrame | None = None,
     freeze_encoder: bool = False,
     pretrain_epochs: int = 30,
     n_outer: int = 5,
@@ -382,6 +613,7 @@ def run_cv_pretrained(
     assignments: pl.DataFrame | None = None,
     folds: list[int] | None = None,
     on_fold=None,
+    uncertainty: bool = False,
     **chemprop_kwargs,
 ) -> pl.DataFrame:
     """A3 -- pretrain the encoder on public PubChem data, then fine-tune per fold.
@@ -400,6 +632,24 @@ def run_cv_pretrained(
         frames: Scored endpoint name -> training frame.
         pretraining: Wide frame from `public_pretraining_matrix`, with a
             ``smiles_std`` column and one column per endpoint in the same order.
+        pretrain_targets: Columns of `pretraining` to pretrain on. Defaults to the
+            scored endpoints alone, which is 05's behaviour. **Pass the full head
+            list** from `public_union_matrix` or `full_union_matrix` to actually use
+            the auxiliary sources: without it those columns are built and then
+            silently dropped, so arms built on different matrices train on identical
+            data and the comparison measures nothing.
+
+            The scored endpoints must come first, in `frames` order, because chemprop
+            restores output heads positionally when warm-starting.
+        finetune_targets: Extra per-compound targets to fine-tune on alongside the
+            scored endpoints, keyed on ``Molecule_Name`` -- see
+            `challenge_auxiliary_matrix` for the challenge's own TDI-condition and
+            Emax arms. Unmeasured cells stay null and chemprop masks them in the loss.
+
+            Both stages must expose the same head list or the warm-start cannot line
+            up, so each frame is padded with null columns for whatever the other has.
+            A null means "not measured", which is what a public-assay head is for a
+            challenge compound and what a challenge auxiliary is for a public one.
         method_name: Name written into the OOF ``method`` column.
         freeze_encoder: Lock the message-passing weights during fine-tuning. Worth
             testing both ways -- freezing protects the pretrained representation from
@@ -414,10 +664,183 @@ def run_cv_pretrained(
         folds: Run only these fold indices. The pretrain runs on the first call and
             the checkpoint is reused, so a fold-major notebook pays for it once.
         on_fold: Progress callback.
+        uncertainty: Request `y_unc` alongside `y_pred` in the OOF frame (notebook
+            06). Requires `chemprop_kwargs` to include an `uncertainty_method`, since
+            that is what actually gives chemprop something to report -- see
+            `graph_models.ChempropModel.predict`. `y_unc` is always a variance.
         **chemprop_kwargs: Forwarded to `ChempropMultitargetModel`.
 
     Returns:
-        Long OOF frame over the scored endpoints.
+        Long OOF frame over the scored endpoints, with a `y_unc` column added when
+        `uncertainty=True`.
+    """
+    if uncertainty and chemprop_kwargs.get("uncertainty_method") is None:
+        raise ValueError("uncertainty=True needs an uncertainty_method in chemprop_kwargs")
+    from .graph_models import ChempropMultitargetModel
+
+    if assignments is None:
+        _, assignments = shared_scaffold_folds(frames, n_outer=n_outer, n_inner=n_inner, seed=seed)
+
+    endpoints = list(frames)
+    missing = [e for e in endpoints if e not in pretraining.columns]
+    if missing:
+        raise ValueError(f"pretraining frame is missing endpoint columns {missing}")
+
+    # Heads to train, scored endpoints first. Chemprop restores output heads by
+    # position when warm-starting from a checkpoint, so both stages must agree on
+    # this list exactly -- a 16-head pretrain cannot warm-start a 4-head fine-tune.
+    targets = list(pretrain_targets) if pretrain_targets else list(endpoints)
+    if targets[: len(endpoints)] != endpoints:
+        raise ValueError(
+            "pretrain_targets must begin with the scored endpoints in `frames` order: "
+            f"got {targets[: len(endpoints)]} against {endpoints}"
+        )
+    absent = [t for t in targets if t not in pretraining.columns]
+    if absent:
+        raise ValueError(f"pretraining frame is missing target columns {absent}")
+
+    wide = _wide_frame(frames)
+    if finetune_targets is not None:
+        extra = [c for c in finetune_targets.columns if c not in ("Molecule_Name", "SMILES")]
+        wide = wide.join(
+            finetune_targets.select(["Molecule_Name", *extra]),
+            on="Molecule_Name",
+            how="left",
+        )
+        targets = targets + [c for c in extra if c not in targets]
+
+    # Pad each stage with the other's columns. A head the other stage measures is
+    # simply unmeasured here, which is a null like any other unmeasured endpoint and
+    # is masked in chemprop's loss rather than read as a real value of zero.
+    pretraining = pretraining.with_columns(
+        [pl.lit(None, dtype=pl.Float64).alias(t) for t in targets if t not in pretraining.columns]
+    )
+    wide = wide.with_columns(
+        [pl.lit(None, dtype=pl.Float64).alias(t) for t in targets if t not in wide.columns]
+    )
+
+    stacked, _ = endpoint_indicator_frame(frames)
+    n_folds = assignments["fold"].n_unique()
+
+    # One pretrain for the whole run. A dedicated directory keeps this checkpoint
+    # away from the default one, so an unpretrained control arm in the same session
+    # cannot accidentally warm-start from it -- silent contamination that would make
+    # the control look as good as the treatment and hide a real effect.
+    pretrain_dir = C.PROJECT_ROOT / ".chemprop_pretrain" / method_name
+    template = ChempropMultitargetModel(
+        targets=targets,
+        pretrain_dir=pretrain_dir,
+        pretrain_epochs=pretrain_epochs,
+        **chemprop_kwargs,
+    )
+    if not (pretrain_dir / "model_0" / "best.pt").exists():
+        rng = np.random.default_rng(seed)
+        order = rng.permutation(pretraining.height)
+        n_val = max(1, int(p_val * pretraining.height))
+        pre_val, pre_fit = pretraining[order[:n_val]], pretraining[order[n_val:]]
+        template.pretrain_wide(
+            pre_fit["smiles_std"].to_list(),
+            pre_fit.select(targets).to_numpy(),
+            pre_val["smiles_std"].to_list(),
+            pre_val.select(targets).to_numpy(),
+        )
+
+    records: list[dict] = []
+    for fold, outer, inner, train_long, _val, test_long in fold_assignment_splits(
+        stacked, assignments
+    ):
+        if folds is not None and fold not in folds:
+            continue
+
+        train_names = set(train_long["Molecule_Name"].to_list())
+        train_wide = wide.filter(pl.col("Molecule_Name").is_in(train_names))
+        fit_wide, val_wide = _split_validation(train_wide, seed, fold, p_val)
+
+        model = ChempropMultitargetModel(
+            targets=targets,
+            pretrain_dir=pretrain_dir,
+            freeze_encoder=freeze_encoder,
+            **chemprop_kwargs,
+        )
+        model.fit(
+            fit_wide["SMILES"].to_list(),
+            fit_wide.select(targets).to_numpy(),
+            smiles_val=val_wide["SMILES"].to_list(),
+            y_val=val_wide.select(targets).to_numpy(),
+        )
+
+        test_names = set(test_long["Molecule_Name"].to_list())
+        test_wide = wide.filter(pl.col("Molecule_Name").is_in(test_names)).sort("Molecule_Name")
+
+        if uncertainty:
+            predictions, unc = model.predict(test_wide["SMILES"].to_list(), return_uncertainty=True)
+            y_pred = _predictions_for(test_long, test_wide, predictions, endpoints)
+            y_unc = _predictions_for(test_long, test_wide, unc, endpoints)
+            fold_records = _oof_records(test_long, y_pred, method_name, fold, outer, inner)
+            for record, unc_value in zip(fold_records, y_unc, strict=True):
+                record["y_unc"] = float(unc_value)
+            records.extend(fold_records)
+        else:
+            predictions = model.predict(test_wide["SMILES"].to_list())
+            y_pred = _predictions_for(test_long, test_wide, predictions, endpoints)
+            records.extend(_oof_records(test_long, y_pred, method_name, fold, outer, inner))
+        report_fold(on_fold, fold, n_folds)
+
+    return pl.DataFrame(records)
+
+
+def run_cv_ensemble_weighting(
+    frames: dict[str, pl.DataFrame],
+    pretraining: pl.DataFrame,
+    ensemble_size: int = 4,
+    pretrain_epochs: int = 30,
+    n_outer: int = 5,
+    n_inner: int = 5,
+    seed: int = 42,
+    p_val: float = 0.1,
+    assignments: pl.DataFrame | None = None,
+    folds: list[int] | None = None,
+    on_fold=None,
+    **chemprop_kwargs,
+) -> pl.DataFrame:
+    """Compare uniform vs inverse-variance-weighted ensemble averaging, paired.
+
+    A Chemprop ensemble (`uncertainty_method="ensemble"`) is `ensemble_size`
+    checkpoints fit on the same data with different initialisations; chemprop's own
+    CLI averages them uniformly and reports their variance separately. This fits
+    that same ensemble once per fold and reads out each checkpoint's own prediction
+    (`graph_models.ChempropMultitargetModel.predict_ensemble_members`), so a uniform
+    average and an inverse-variance-weighted average can be built from *the same
+    fit* rather than two separate CV runs -- which is what makes them properly
+    paired for `evaluation.paired_bootstrap` (identical folds is not enough; the
+    exact same checkpoints removes fit-to-fit noise as an explanation for a
+    difference).
+
+    Per-compound inverse-variance weights use each checkpoint's squared deviation
+    from the ensemble mean as its variance proxy, floored to avoid a divide-by-zero
+    when checkpoints agree exactly. A checkpoint that consistently disagrees with
+    its peers on a compound is downweighted there specifically, rather than
+    discarded globally -- this is what lets one checkpoint be trustworthy on some
+    compounds and not others, which a global model-selection weight cannot express.
+
+    Args:
+        frames: Scored endpoint name -> training frame.
+        pretraining: Wide frame from `public_pretraining_matrix`.
+        ensemble_size: Number of checkpoints Chemprop trains per fold.
+        pretrain_epochs: Epochs for the single pretraining run (shared with any
+            other `run_cv_pretrained` call using the same `method_name="pubchem"`
+            checkpoint directory convention -- pass a `pretrain_dir` via
+            `chemprop_kwargs` to point at an existing checkpoint rather than
+            retraining one).
+        n_outer, n_inner, seed, p_val, assignments, folds, on_fold: As
+            `run_cv_pretrained`.
+        **chemprop_kwargs: Forwarded to `ChempropMultitargetModel`, minus
+            `uncertainty_method`/`ensemble_size`, which this function sets itself.
+
+    Returns:
+        Long OOF frame with `method` set to `"ensemble_uniform"` or
+        `"ensemble_ivw"` for every row, on identical (fold, compound, endpoint)
+        keys -- concatenate and pivot for a paired comparison.
     """
     from .graph_models import ChempropMultitargetModel
 
@@ -433,11 +856,9 @@ def run_cv_pretrained(
     stacked, _ = endpoint_indicator_frame(frames)
     n_folds = assignments["fold"].n_unique()
 
-    # One pretrain for the whole run. A dedicated directory keeps this checkpoint
-    # away from the default one, so an unpretrained control arm in the same session
-    # cannot accidentally warm-start from it -- silent contamination that would make
-    # the control look as good as the treatment and hide a real effect.
-    pretrain_dir = C.PROJECT_ROOT / ".chemprop_pretrain" / method_name
+    pretrain_dir = chemprop_kwargs.pop("pretrain_dir", None)
+    if pretrain_dir is None:
+        pretrain_dir = C.PROJECT_ROOT / ".chemprop_pretrain" / "ensemble_weighting"
     template = ChempropMultitargetModel(
         targets=endpoints,
         pretrain_dir=pretrain_dir,
@@ -470,7 +891,8 @@ def run_cv_pretrained(
         model = ChempropMultitargetModel(
             targets=endpoints,
             pretrain_dir=pretrain_dir,
-            freeze_encoder=freeze_encoder,
+            uncertainty_method="ensemble",
+            ensemble_size=ensemble_size,
             **chemprop_kwargs,
         )
         model.fit(
@@ -482,10 +904,19 @@ def run_cv_pretrained(
 
         test_names = set(test_long["Molecule_Name"].to_list())
         test_wide = wide.filter(pl.col("Molecule_Name").is_in(test_names)).sort("Molecule_Name")
-        predictions = model.predict(test_wide["SMILES"].to_list())
+        # (n_compounds, n_targets, ensemble_size) -- every checkpoint's own prediction.
+        members = model.predict_ensemble_members(test_wide["SMILES"].to_list())
 
-        y_pred = _predictions_for(test_long, test_wide, predictions, endpoints)
-        records.extend(_oof_records(test_long, y_pred, method_name, fold, outer, inner))
+        uniform = members.mean(axis=-1)
+        member_mean = members.mean(axis=-1, keepdims=True)
+        member_var = np.clip((members - member_mean) ** 2, 1e-6, None)
+        weights = 1.0 / member_var
+        weights /= weights.sum(axis=-1, keepdims=True)
+        weighted = (members * weights).sum(axis=-1)
+
+        for method_name, predictions in (("ensemble_uniform", uniform), ("ensemble_ivw", weighted)):
+            y_pred = _predictions_for(test_long, test_wide, predictions, endpoints)
+            records.extend(_oof_records(test_long, y_pred, method_name, fold, outer, inner))
         report_fold(on_fold, fold, n_folds)
 
     return pl.DataFrame(records)

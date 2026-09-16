@@ -56,9 +56,7 @@ def test_training_frame_schema():
     assert set(frame.columns) == {"Molecule_Name", "SMILES", "y_true", "y_lower", "y_upper"}
     assert frame["y_true"].null_count() == 0
     # Credible intervals must bracket the point estimate.
-    bracketed = frame.filter(
-        pl.col("y_lower").is_not_null() & pl.col("y_upper").is_not_null()
-    )
+    bracketed = frame.filter(pl.col("y_lower").is_not_null() & pl.col("y_upper").is_not_null())
     assert (bracketed["y_lower"] <= bracketed["y_true"]).all()
     assert (bracketed["y_upper"] >= bracketed["y_true"]).all()
 
@@ -333,9 +331,7 @@ def test_macro_averaged_fold_metrics_matches_plain_mean():
     case simple enough to check by hand."""
     ep_a = pl.DataFrame({"method": ["m", "m"], "fold": [0, 1], "st_rae": [1.0, 2.0]})
     ep_b = pl.DataFrame({"method": ["m", "m"], "fold": [0, 1], "st_rae": [3.0, 4.0]})
-    macro = evaluation.macro_averaged_fold_metrics(
-        {"A": ep_a, "B": ep_b}, metric_col="st_rae"
-    )
+    macro = evaluation.macro_averaged_fold_metrics({"A": ep_a, "B": ep_b}, metric_col="st_rae")
     got = dict(zip(macro["fold"].to_list(), macro["st_rae"].to_list(), strict=True))
     assert got == {0: 2.0, 1: 3.0}  # mean(1,3)=2, mean(2,4)=3
 
@@ -400,9 +396,7 @@ def test_tdi_cv_beats_majority_baseline():
 def test_tdi_predictions_are_boolean():
     frame = data.tdi_training_frame("CYP2D6").head(300)
     test_smiles = data.load_test()["SMILES"].head(20).to_list()
-    preds = models.fit_predict_test_classification(
-        frame, test_smiles, method="lgbm", n_bits=256
-    )
+    preds = models.fit_predict_test_classification(frame, test_smiles, method="lgbm", n_bits=256)
     assert preds.dtype == np.bool_
     assert len(preds) == 20
 

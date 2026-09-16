@@ -89,9 +89,7 @@ def endpoint_counts(df: pl.DataFrame, endpoints: list[str]) -> pl.DataFrame:
     return pl.DataFrame(
         {
             "endpoint": [e for e in endpoints if e in df.columns],
-            "n_labelled": [
-                int(df[e].is_not_null().sum()) for e in endpoints if e in df.columns
-            ],
+            "n_labelled": [int(df[e].is_not_null().sum()) for e in endpoints if e in df.columns],
         }
     )
 

@@ -97,9 +97,7 @@ def test_no_leakage_with_multiple_outer_repeats(toy_frames) -> None:
     n_folds = 0
     for _fd, _o, _i, train, _v, test in cv.fold_assignment_splits(frame, table):
         n_folds += 1
-        overlap = set(test["Molecule_Name"].to_list()) & set(
-            train["Molecule_Name"].to_list()
-        )
+        overlap = set(test["Molecule_Name"].to_list()) & set(train["Molecule_Name"].to_list())
         assert not overlap, f"{len(overlap)} compounds in both train and test"
 
     assert n_folds == 6  # 3 repeats x 2 folds
@@ -152,9 +150,7 @@ def test_fold_assignment_splits_partition_the_frame(toy_frames) -> None:
     for _fd, _o, _i, train, _v, test in cv.fold_assignment_splits(frame, table):
         tested.extend(test["Molecule_Name"].to_list())
         # Train and test must be disjoint within a fold too.
-        assert not set(test["Molecule_Name"].to_list()) & set(
-            train["Molecule_Name"].to_list()
-        )
+        assert not set(test["Molecule_Name"].to_list()) & set(train["Molecule_Name"].to_list())
     assert sorted(tested) == sorted(frame["Molecule_Name"].to_list())
 
 
@@ -422,9 +418,7 @@ def test_fit_predict_test_multitarget_returns_one_array_per_endpoint(
                 [np.arange(len(smiles), dtype=float) + i for i in range(n_targets)]
             )
 
-    monkeypatch.setattr(
-        "cyp.graph_models.ChempropMultitargetModel", _StubModel, raising=True
-    )
+    monkeypatch.setattr("cyp.graph_models.ChempropMultitargetModel", _StubModel, raising=True)
     out = multitask.fit_predict_test_multitarget(toy_frames, test_smiles)
 
     assert set(out) == set(toy_frames)

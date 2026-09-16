@@ -136,9 +136,7 @@ def test_paired_plot_difference_is_treatment_minus_control() -> None:
 
 
 def test_paired_plot_ignores_models_missing_an_arm() -> None:
-    frame = _fold_scores(
-        {"a_singletask": 0.5, "a_multitask": 0.4, "lonely_singletask": 0.9}
-    )
+    frame = _fold_scores({"a_singletask": 0.5, "a_multitask": 0.4, "lonely_singletask": 0.9})
     fig = mcs.paired_arm_plot(frame, "score", higher_is_better=False)
     labels = [t.get_text() for t in fig.axes[0].get_yticklabels()]
     assert len(labels) == 1
@@ -197,6 +195,4 @@ def test_top_n_respects_the_metric_direction() -> None:
 def test_top_n_below_two_is_rejected() -> None:
     frame = _fold_scores({"a": 0.1, "b": 0.5})
     with pytest.raises(ValueError, match="at least 2"):
-        mcs.make_mcs_grid(
-            {"p": frame}, metric_col="score", higher_is_better={"p": False}, top_n=1
-        )
+        mcs.make_mcs_grid({"p": frame}, metric_col="score", higher_is_better={"p": False}, top_n=1)

@@ -68,9 +68,7 @@ def _nested(
     p_val: float,
 ) -> Iterator[tuple[int, int, int, pl.DataFrame, pl.DataFrame | None, pl.DataFrame]]:
     for i in range(n_outer):
-        for j, (train_idx, test_idx) in enumerate(
-            _group_kfold_shuffle(groups, n_inner, seed + i)
-        ):
+        for j, (train_idx, test_idx) in enumerate(_group_kfold_shuffle(groups, n_inner, seed + i)):
             fold = i * n_inner + j
             train, test = df[train_idx].clone(), df[test_idx].clone()
             val = None
@@ -177,9 +175,7 @@ def shared_scaffold_folds(
     # must get exactly one scaffold and one fold, so duplicates are collapsed here
     # rather than after splitting.
     union = (
-        pl.concat(
-            [f.select(key, smiles_col) for f in frames.values()], how="vertical_relaxed"
-        )
+        pl.concat([f.select(key, smiles_col) for f in frames.values()], how="vertical_relaxed")
         .unique(subset=[key])
         .sort(key)
     )
@@ -253,9 +249,7 @@ def fold_assignment_splits(
     # other repeats' entries -- which meant 100% of test compounds were also in
     # training. Train membership must therefore be decided by compound identity
     # within one repeat, never by filtering the duplicated fold column.
-    fold_meta = (
-        folds.select("fold", "outer_fold", "inner_fold").unique().sort("fold")
-    )
+    fold_meta = folds.select("fold", "outer_fold", "inner_fold").unique().sort("fold")
 
     for row in fold_meta.iter_rows(named=True):
         fold, outer, inner = row["fold"], row["outer_fold"], row["inner_fold"]

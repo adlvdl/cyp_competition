@@ -33,9 +33,7 @@ AVAILABLE = tuple(_FP_REGISTRY)
 
 def _resolve(name: str):
     if name not in _FP_REGISTRY:
-        raise ValueError(
-            f"Unknown fingerprint {name!r}. Available: {sorted(_FP_REGISTRY)}"
-        )
+        raise ValueError(f"Unknown fingerprint {name!r}. Available: {sorted(_FP_REGISTRY)}")
     module_path, class_name = _FP_REGISTRY[name]
     module = __import__(module_path, fromlist=[class_name])
     return getattr(module, class_name)

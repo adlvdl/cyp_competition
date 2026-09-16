@@ -44,9 +44,7 @@ def _attach(
             raise KeyError(f"Missing predictions for {column}")
         values = np.asarray(predictions[column])
         if len(values) != base.height:
-            raise ValueError(
-                f"{column}: got {len(values)} predictions, expected {base.height}"
-            )
+            raise ValueError(f"{column}: got {len(values)} predictions, expected {base.height}")
         out = out.with_columns(pl.Series(column, values))
     return out
 

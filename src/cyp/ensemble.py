@@ -23,9 +23,7 @@ import polars as pl
 from .metrics import st_rae
 
 
-def weighted_average(
-    predictions: dict[str, np.ndarray], weights: dict[str, float]
-) -> np.ndarray:
+def weighted_average(predictions: dict[str, np.ndarray], weights: dict[str, float]) -> np.ndarray:
     """Normalized weighted average of per-model predictions.
 
     Weights need not sum to 1; they are normalized here. Models with weight 0 are
@@ -54,9 +52,9 @@ def oof_to_wide(oof: pl.DataFrame, endpoint: str, pred_col: str = "y_pred"):
     endpoint. Every model must cover the same compounds, which holds when the folds
     came from the same `cv` generator."""
     subset = oof.filter(pl.col("endpoint") == endpoint)
-    wide = subset.pivot(
-        values=pred_col, index=["Molecule_Name", "y_true"], on="method"
-    ).sort("Molecule_Name")
+    wide = subset.pivot(values=pred_col, index=["Molecule_Name", "y_true"], on="method").sort(
+        "Molecule_Name"
+    )
     methods = [c for c in wide.columns if c not in ("Molecule_Name", "y_true")]
     preds = {m: wide[m].to_numpy() for m in methods}
     return preds, wide["y_true"].to_numpy(), wide["Molecule_Name"].to_list()
@@ -94,22 +92,16 @@ def sweep_weights(
             score = float(np.mean(np.abs(y_true - blended)))
         else:
             raise ValueError(f"Unsupported metric: {metric!r}")
-        rows.append(
-            {"score": score, **{f"w_{m}": w for m, w in weights.items()}}
-        )
+        rows.append({"score": score, **{f"w_{m}": w for m, w in weights.items()}})
     return pl.DataFrame(rows).sort("score")
 
 
 def describe_weights(weights: dict[str, float]) -> str:
     """Compact label for a weight set, e.g. `lgbm5-xgb1-rf0`, for run naming."""
-    return "-".join(
-        f"{m}{w:g}" for m, w in sorted(weights.items()) if w != 0
-    ) or "empty"
+    return "-".join(f"{m}{w:g}" for m, w in sorted(weights.items()) if w != 0) or "empty"
 
 
-def catastrophic_rate(
-    y_true: np.ndarray, y_pred: np.ndarray, threshold: float = 1.0
-) -> float:
+def catastrophic_rate(y_true: np.ndarray, y_pred: np.ndarray, threshold: float = 1.0) -> float:
     """Fraction of predictions off by more than `threshold` log units.
 
     This is the quantity ensembling actually improved in PXR, so track it alongside
