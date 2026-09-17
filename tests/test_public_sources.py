@@ -138,9 +138,7 @@ def test_challenge_auxiliary_matrix_covers_the_unused_arms():
 
     # The reason the TDI arm is worth reading: it carries compounds the direct
     # inhibition table does not, and far more CYP3A4 rows.
-    direct = int(
-        data.load_train_inhibition()["CYP3A4_pIC50_direct_inhibition"].is_not_null().sum()
-    )
+    direct = int(data.load_train_inhibition()["CYP3A4_pIC50_direct_inhibition"].is_not_null().sum())
     tdi_condition = int(frame["CYP3A4_pIC50_TDI_condition"].is_not_null().sum())
     assert tdi_condition > direct
 
@@ -206,9 +204,7 @@ def test_skeleton_exclusion_removes_more_than_smiles_exclusion():
     train_smiles = data.load_train_inhibition()["SMILES"].to_list()
     test_smiles = data.load_test()["SMILES"].to_list()
 
-    wide, _ = aux_training.full_union_matrix(
-        endpoints, exclude_smiles=train_smiles + test_smiles
-    )
+    wide, _ = aux_training.full_union_matrix(endpoints, exclude_smiles=train_smiles + test_smiles)
     corpus = external.skeleton_keys(wide["smiles_std"].to_list())
 
     # The exclusion holds under the stricter key, which is the point.

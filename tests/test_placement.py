@@ -244,6 +244,4 @@ def test_sign_resolver_needs_a_pearson():
     y_pred = np.random.default_rng(0).normal(4.5, 0.5, 100)
     truth = np.random.default_rng(1).normal(3.0, 1.0, 200)
     with pytest.raises(ValueError, match="pearson"):
-        P.resolve_sign_with_strae(
-            y_pred, [P.Moments(3.0, 1.0)], 1.0, truth, np.full(200, 0.5)
-        )
+        P.resolve_sign_with_strae(y_pred, [P.Moments(3.0, 1.0)], 1.0, truth, np.full(200, 0.5))

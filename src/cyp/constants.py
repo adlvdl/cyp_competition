@@ -167,7 +167,6 @@ CHEMBL_FILE_TEMPLATE = "chembl-{isoform}.csv"
 CHEMBL_PCHEMBL_FLOOR = 4.0
 
 
-
 def external_snapshot_dir(snapshot: str | None = None) -> Path:
     """Directory for an external-data snapshot, defaulting to the most recent one.
 
