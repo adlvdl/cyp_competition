@@ -26,7 +26,24 @@ _FP_REGISTRY: dict[str, tuple[str, str]] = {
     "mordred": ("skfp.fingerprints", "MordredFingerprint"),
     "mqn": ("skfp.fingerprints", "MQNsFingerprint"),
     "pubchem": ("skfp.fingerprints", "PubChemFingerprint"),
+    # Conformer-requiring (3D). `compute` generates ETKDG conformers for these
+    # automatically via the `requires_conformers` branch below. Added for
+    # notebook 09: CYP2D6 is the one endpoint whose potency tracks basic-nitrogen
+    # count (+0.284 Spearman, against -0.07 to -0.16 elsewhere) rather than
+    # lipophilicity, which is the signature of a pharmacophore ECFP cannot express.
+    "e3fp": ("skfp.fingerprints", "E3FPFingerprint"),
+    "usr": ("skfp.fingerprints", "USRFingerprint"),
+    "usrcat": ("skfp.fingerprints", "USRCATFingerprint"),
+    "pharmacophore": ("skfp.fingerprints", "PharmacophoreFingerprint"),
+    "whim": ("skfp.fingerprints", "WHIMFingerprint"),
+    "getaway": ("skfp.fingerprints", "GETAWAYFingerprint"),
 }
+
+#: Entries of `_FP_REGISTRY` that need 3D conformers. Kept as data rather than
+#: probed, so a caller can branch on cost without instantiating a featurizer --
+#: conformer generation dominates these (~1.7 min for 1,500 compounds against
+#: seconds for a 2D fingerprint) and a sweep should know that before starting.
+CONFORMER_KINDS = ("e3fp", "usr", "usrcat", "pharmacophore", "whim", "getaway")
 
 AVAILABLE = tuple(_FP_REGISTRY)
 

@@ -633,3 +633,103 @@ def test_checkpoint_args_repeats_path_for_ensemble_size():
     mve = graph_models.ChempropModel(uncertainty_method="mve")
     args = mve._checkpoint_args(ckpt)
     assert args == ["--checkpoint", str(ckpt)]
+
+
+def test_descriptor_columns_appear_in_train_args() -> None:
+    pytest.importorskip("chemprop")
+    from cyp import graph_models
+
+    model = graph_models.ChempropMultitargetModel(
+        targets=["a", "b"], descriptor_columns=["d1", "d2"]
+    )
+    args = model._base_train_args("ignored")
+    idx = args.index("--descriptors-columns")
+    assert args[idx + 1 : idx + 3] == ["d1", "d2"]
+
+    plain = graph_models.ChempropMultitargetModel(targets=["a", "b"])
+    assert "--descriptors-columns" not in plain._base_train_args("ignored")
+
+
+def test_fit_without_descriptors_rejects_a_model_that_needs_them() -> None:
+    """A model built with descriptor_columns has an FFN sized for them -- fitting
+    without any would silently train the wrong architecture rather than fail, so this
+    must raise before chemprop is ever invoked."""
+    pytest.importorskip("chemprop")
+    from cyp import graph_models
+
+    model = graph_models.ChempropMultitargetModel(
+        targets=["a", "b"], descriptor_columns=["d1", "d2"]
+    )
+    with pytest.raises(ValueError, match="descriptor_columns"):
+        model.fit(["CCO", "CCN"], np.array([[1.0, 2.0], [3.0, 4.0]]))
+
+
+def test_fit_with_descriptors_rejects_a_model_that_has_none() -> None:
+    """The reverse mismatch: an array passed to a plain model would be silently
+    ignored by chemprop rather than raising, since no --descriptors-columns names it."""
+    pytest.importorskip("chemprop")
+    from cyp import graph_models
+
+    model = graph_models.ChempropMultitargetModel(targets=["a", "b"])
+    with pytest.raises(ValueError, match="descriptor_columns"):
+        model.fit(
+            ["CCO", "CCN"],
+            np.array([[1.0, 2.0], [3.0, 4.0]]),
+            descriptors=np.zeros((2, 2)),
+        )
+
+
+def test_descriptors_shape_is_checked() -> None:
+    pytest.importorskip("chemprop")
+    from cyp import graph_models
+
+    model = graph_models.ChempropMultitargetModel(
+        targets=["a", "b"], descriptor_columns=["d1", "d2"]
+    )
+    with pytest.raises(ValueError, match="shape"):
+        model.fit(
+            ["CCO", "CCN"],
+            np.array([[1.0, 2.0], [3.0, 4.0]]),
+            descriptors=np.zeros((2, 3)),  # wrong number of descriptor columns
+        )
+
+
+def test_descriptor_columns_end_to_end_fit_and_predict(tmp_path) -> None:
+    """A real (tiny) fit and predict, to prove --descriptors-columns actually reaches
+    chemprop and the FFN's width agrees between train and predict.
+
+    Pinned after a manual smoke test found predict fails outright (a matrix-shape
+    RuntimeError from the FFN, not a quality problem) when descriptors are supplied
+    at fit time but omitted at predict time -- the two must always travel together.
+    """
+    pytest.importorskip("chemprop")
+    from cyp import graph_models
+
+    smiles = ["CCO", "CCN", "CCC", "c1ccccc1", "CN1CCC[C@H]1c1cccnc1", "CCOCC", "CC(C)O", "CCCCO"]
+    y = np.array([[4.5], [5.1], [3.2], [4.8], [5.5], [3.9], [4.1], [4.4]])
+    descriptors = np.array(
+        [
+            [1.2, 0.3],
+            [0.8, 0.1],
+            [2.1, 0.5],
+            [0.0, 0.9],
+            [1.0, 0.2],
+            [1.5, 0.4],
+            [1.1, 0.35],
+            [1.3, 0.28],
+        ]
+    )
+
+    model = graph_models.ChempropMultitargetModel(
+        targets=["target"],
+        descriptor_columns=["d1", "d2"],
+        model_dir=tmp_path / "model",
+        epochs=3,
+    )
+    model.fit(smiles, y, descriptors=descriptors)
+    preds = model.predict(smiles, descriptors=descriptors)
+    assert preds.shape == (len(smiles), 1)
+    assert np.isfinite(preds).all()
+
+    with pytest.raises(ValueError, match="descriptor_columns"):
+        model.predict(smiles)

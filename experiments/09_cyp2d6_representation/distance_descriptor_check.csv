@@ -1,0 +1,9 @@
+endpoint,descriptor,n,spearman
+CYP1A2,topological_n_to_aromatic,231,-0.0626
+CYP1A2,spatial_n_to_aromatic_min,231,-0.1159
+CYP2C9,topological_n_to_aromatic,226,-0.3288
+CYP2C9,spatial_n_to_aromatic_min,226,-0.2678
+CYP2D6,topological_n_to_aromatic,600,-0.1218
+CYP2D6,spatial_n_to_aromatic_min,600,-0.1652
+CYP3A4,topological_n_to_aromatic,524,-0.2351
+CYP3A4,spatial_n_to_aromatic_min,524,-0.2041

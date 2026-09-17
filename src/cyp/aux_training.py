@@ -614,6 +614,8 @@ def run_cv_pretrained(
     folds: list[int] | None = None,
     on_fold=None,
     uncertainty: bool = False,
+    finetune_descriptors: pl.DataFrame | None = None,
+    descriptor_timeout_s: float | None = None,
     **chemprop_kwargs,
 ) -> pl.DataFrame:
     """A3 -- pretrain the encoder on public PubChem data, then fine-tune per fold.
@@ -668,6 +670,26 @@ def run_cv_pretrained(
             06). Requires `chemprop_kwargs` to include an `uncertainty_method`, since
             that is what actually gives chemprop something to report -- see
             `graph_models.ChempropModel.predict`. `y_unc` is always a variance.
+        finetune_descriptors: Molecule-level extra features for the *fine-tuning*
+            stage only -- keyed on ``Molecule_Name``, one column per name in
+            `chemprop_kwargs["descriptor_columns"]`. Not used for pretraining: the
+            pretraining corpus is public data with no pharmacophore descriptors
+            precomputed, and the geometry hypothesis this exists to test
+            (notebook 09) is about the challenge-scale fine-tuning signal, not the
+            encoder's warm start. Every fine-tuning compound (train, val and test in
+            every fold) must have a row here when `descriptor_columns` is set, or the
+            join below silently drops it and `ChempropMultitargetModel` raises on the
+            resulting shape mismatch rather than training on a partial table.
+        descriptor_timeout_s: Wall-clock bound per molecule for the pretraining
+            corpus's descriptor computation below (only reached when
+            `descriptor_columns` is set). Public-library molecules average larger
+            and more flexible than the challenge's own curated set, so a handful
+            can dominate an otherwise-fast batch; a timed-out molecule gets NaN
+            descriptors rather than stalling the whole pretrain. `None` (default)
+            disables the bound -- see `pharmacophore.descriptors`. The resulting
+            matrices are themselves cached to `pretrain_dir` (one `.npy` per
+            fit/val split, keyed on row count), so a crash after this step but
+            before the pretrain checkpoint is written does not repeat it on rerun.
         **chemprop_kwargs: Forwarded to `ChempropMultitargetModel`.
 
     Returns:
@@ -699,7 +721,33 @@ def run_cv_pretrained(
     if absent:
         raise ValueError(f"pretraining frame is missing target columns {absent}")
 
+    descriptor_columns = chemprop_kwargs.get("descriptor_columns")
+    if descriptor_columns and finetune_descriptors is None:
+        raise ValueError(
+            "chemprop_kwargs sets descriptor_columns but no finetune_descriptors "
+            "frame was given -- the fine-tuning model has an FFN sized for these "
+            "columns and cannot be fit or predicted from without them"
+        )
+    if finetune_descriptors is not None and not descriptor_columns:
+        raise ValueError(
+            "finetune_descriptors was given but chemprop_kwargs has no "
+            "descriptor_columns -- name the columns so ChempropMultitargetModel "
+            "knows to use them"
+        )
+
     wide = _wide_frame(frames)
+    if finetune_descriptors is not None:
+        missing_names = set(wide["Molecule_Name"]) - set(finetune_descriptors["Molecule_Name"])
+        if missing_names:
+            raise ValueError(
+                f"finetune_descriptors is missing {len(missing_names)} of "
+                f"{wide.height} fine-tuning compounds, e.g. {sorted(missing_names)[:5]}"
+            )
+        wide = wide.join(
+            finetune_descriptors.select(["Molecule_Name", *descriptor_columns]),
+            on="Molecule_Name",
+            how="left",
+        )
     if finetune_targets is not None:
         extra = [c for c in finetune_targets.columns if c not in ("Molecule_Name", "SMILES")]
         wide = wide.join(
@@ -738,11 +786,88 @@ def run_cv_pretrained(
         order = rng.permutation(pretraining.height)
         n_val = max(1, int(p_val * pretraining.height))
         pre_val, pre_fit = pretraining[order[:n_val]], pretraining[order[n_val:]]
+
+        pre_fit_descriptors = pre_val_descriptors = None
+        if descriptor_columns:
+            # The pretraining corpus has no pharmacophore descriptors of its own --
+            # they are computed here, once, purely so the pretrain checkpoint's FFN
+            # has the same input width the fine-tuning model will need. See
+            # `ChempropMultitargetModel.pretrain_wide` for why a width mismatch
+            # between the two stages fails the `--checkpoint` load outright.
+            #
+            # n_jobs=-1: a public pretraining corpus can run to tens of thousands
+            # of compounds (measured: 12,719 for the PubChem matrix), and
+            # single-threaded 3D descriptor computation on a corpus that size took
+            # over an hour with no progress signal in one run -- public-library
+            # molecules average larger and more flexible than the challenge's own
+            # curated set, so cost does not extrapolate linearly from a small
+            # sample. The `on_progress` print is deliberate, not decorative, for
+            # the same reason CLAUDE.md's `on_fold` convention exists: a
+            # multi-minute step with nothing printed is indistinguishable from a
+            # hang, which is exactly what happened here before this was added.
+            # Cached to `pretrain_dir` itself rather than a separate cache tree --
+            # this descriptor matrix has no purpose beyond warm-starting exactly
+            # this method's pretrain, so it belongs next to the checkpoint it
+            # feeds, and lives no longer than the checkpoint does. Without this, a
+            # crash between finishing the descriptors and `best.pt` being written
+            # (the `pretrain_wide` call below can itself run long) throws away
+            # every minute of the step above, which measured over an hour
+            # single-threaded and ~40 minutes at n_jobs=-1 on the PubChem corpus.
+            # The row count is stamped into the filename as a cheap staleness
+            # check: `pretraining`/`seed`/`p_val` changing shifts `pre_fit`'s
+            # size, so a stale cache from a different corpus or split is a miss
+            # rather than a silent wrong-shape load.
+            from . import pharmacophore
+
+            def _log_progress(label: str):
+                # `done` advances by 1 per compound (joblib streams results as
+                # each finishes, not in fixed-size batches), so gate the print on
+                # a window rather than an exact multiple -- a step size that
+                # doesn't evenly divide `total` would otherwise never print at all.
+                def _callback(done: int, total: int) -> None:
+                    if done == total or done % (max(1, total // 10)) < 100:
+                        print(f"  pharmacophore descriptors ({label}): {done}/{total}")
+
+                return _callback
+
+            pretrain_dir.mkdir(parents=True, exist_ok=True)
+            _fit_cache = pretrain_dir / f"pretrain_descriptors_fit_{pre_fit.height}.npy"
+            if _fit_cache.exists():
+                pre_fit_descriptors = np.load(_fit_cache)
+            else:
+                pre_fit_descriptors = pharmacophore.matrix(
+                    pharmacophore.descriptors(
+                        pre_fit["smiles_std"].to_list(),
+                        n_jobs=-1,
+                        timeout_s=descriptor_timeout_s,
+                        on_progress=_log_progress("pretrain fit"),
+                    ),
+                    descriptor_columns,
+                )
+                np.save(_fit_cache, pre_fit_descriptors)
+
+            _val_cache = pretrain_dir / f"pretrain_descriptors_val_{pre_val.height}.npy"
+            if _val_cache.exists():
+                pre_val_descriptors = np.load(_val_cache)
+            else:
+                pre_val_descriptors = pharmacophore.matrix(
+                    pharmacophore.descriptors(
+                        pre_val["smiles_std"].to_list(),
+                        n_jobs=-1,
+                        timeout_s=descriptor_timeout_s,
+                        on_progress=_log_progress("pretrain val"),
+                    ),
+                    descriptor_columns,
+                )
+                np.save(_val_cache, pre_val_descriptors)
+
         template.pretrain_wide(
             pre_fit["smiles_std"].to_list(),
             pre_fit.select(targets).to_numpy(),
             pre_val["smiles_std"].to_list(),
             pre_val.select(targets).to_numpy(),
+            descriptors_train=pre_fit_descriptors,
+            descriptors_val=pre_val_descriptors,
         )
 
     records: list[dict] = []
@@ -762,18 +887,33 @@ def run_cv_pretrained(
             freeze_encoder=freeze_encoder,
             **chemprop_kwargs,
         )
+        fit_descriptors = (
+            fit_wide.select(descriptor_columns).to_numpy() if descriptor_columns else None
+        )
+        val_descriptors = (
+            val_wide.select(descriptor_columns).to_numpy() if descriptor_columns else None
+        )
         model.fit(
             fit_wide["SMILES"].to_list(),
             fit_wide.select(targets).to_numpy(),
             smiles_val=val_wide["SMILES"].to_list(),
             y_val=val_wide.select(targets).to_numpy(),
+            descriptors=fit_descriptors,
+            descriptors_val=val_descriptors,
         )
 
         test_names = set(test_long["Molecule_Name"].to_list())
         test_wide = wide.filter(pl.col("Molecule_Name").is_in(test_names)).sort("Molecule_Name")
+        test_descriptors = (
+            test_wide.select(descriptor_columns).to_numpy() if descriptor_columns else None
+        )
 
         if uncertainty:
-            predictions, unc = model.predict(test_wide["SMILES"].to_list(), return_uncertainty=True)
+            predictions, unc = model.predict(
+                test_wide["SMILES"].to_list(),
+                return_uncertainty=True,
+                descriptors=test_descriptors,
+            )
             y_pred = _predictions_for(test_long, test_wide, predictions, endpoints)
             y_unc = _predictions_for(test_long, test_wide, unc, endpoints)
             fold_records = _oof_records(test_long, y_pred, method_name, fold, outer, inner)
@@ -781,7 +921,7 @@ def run_cv_pretrained(
                 record["y_unc"] = float(unc_value)
             records.extend(fold_records)
         else:
-            predictions = model.predict(test_wide["SMILES"].to_list())
+            predictions = model.predict(test_wide["SMILES"].to_list(), descriptors=test_descriptors)
             y_pred = _predictions_for(test_long, test_wide, predictions, endpoints)
             records.extend(_oof_records(test_long, y_pred, method_name, fold, outer, inner))
         report_fold(on_fold, fold, n_folds)

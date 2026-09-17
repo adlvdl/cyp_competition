@@ -450,7 +450,7 @@ def test_run_cv_pretrained_uncertainty_adds_y_unc_column(monkeypatch, tmp_path):
         def fit(self, smiles, y, **kwargs):
             return self
 
-        def predict(self, smiles, return_uncertainty=False):
+        def predict(self, smiles, return_uncertainty=False, **kwargs):
             n = len(smiles)
             preds = np.zeros((n, len(self.targets)))
             if not return_uncertainty:
@@ -562,3 +562,125 @@ def test_run_cv_ensemble_weighting_produces_paired_uniform_and_ivw_rows(monkeypa
     ivw_preds = oof.filter(pl.col("method") == "ensemble_ivw").sort("Molecule_Name")["y_pred"]
     assert (uniform_preds == ivw_preds).all()
     assert (uniform_preds == 5.0).all()
+
+
+def test_run_cv_pretrained_requires_finetune_descriptors_when_columns_named():
+    """A model built with chemprop_kwargs=dict(descriptor_columns=[...]) has an FFN
+    sized for those columns, so this must raise before any chemprop call rather than
+    training with a plain FFN or crashing 25 folds in."""
+    frames = {"e1": pl.DataFrame({"Molecule_Name": ["m1"], "SMILES": ["CCO"], "y_true": [5.0]})}
+    with pytest.raises(ValueError, match="finetune_descriptors"):
+        aux_training.run_cv_pretrained(
+            frames,
+            pl.DataFrame({"smiles_std": [], "e1": []}),
+            descriptor_columns=["d1"],
+        )
+
+
+def test_run_cv_pretrained_rejects_descriptors_without_named_columns():
+    """The reverse mismatch: a `finetune_descriptors` frame with no
+    `descriptor_columns` in chemprop_kwargs would be silently ignored by chemprop,
+    since nothing tells it which columns to read as descriptors."""
+    frames = {"e1": pl.DataFrame({"Molecule_Name": ["m1"], "SMILES": ["CCO"], "y_true": [5.0]})}
+    with pytest.raises(ValueError, match="descriptor_columns"):
+        aux_training.run_cv_pretrained(
+            frames,
+            pl.DataFrame({"smiles_std": [], "e1": []}),
+            finetune_descriptors=pl.DataFrame({"Molecule_Name": ["m1"], "d1": [1.0]}),
+        )
+
+
+def test_run_cv_pretrained_rejects_incomplete_finetune_descriptors():
+    """Every fine-tuning compound needs a descriptor row -- a partial frame would
+    otherwise join to null for the missing compounds, which `ChempropMultitargetModel`
+    would write as an empty CSV cell chemprop reads as a real (wrong) value of zero,
+    not as a caught error."""
+    frames = {
+        "e1": pl.DataFrame(
+            {"Molecule_Name": ["m1", "m2"], "SMILES": ["CCO", "CCN"], "y_true": [5.0, 4.0]}
+        )
+    }
+    with pytest.raises(ValueError, match="finetune_descriptors is missing"):
+        aux_training.run_cv_pretrained(
+            frames,
+            pl.DataFrame({"smiles_std": [], "e1": []}),
+            descriptor_columns=["d1"],
+            finetune_descriptors=pl.DataFrame({"Molecule_Name": ["m1"], "d1": [1.0]}),
+        )
+
+
+def test_run_cv_pretrained_threads_descriptors_to_fit_and_predict(monkeypatch, tmp_path):
+    """End-to-end plumbing check with a stub model: every fit/predict call in the
+    fold loop must receive a `descriptors` array with one row per compound, in the
+    same order as the SMILES/target arrays passed alongside it -- a reordering here
+    would silently pair a compound with someone else's pharmacophore descriptors."""
+    from cyp import cv, graph_models
+
+    frames = {
+        "e1": pl.DataFrame(
+            {
+                "Molecule_Name": [f"m{i}" for i in range(12)],
+                "SMILES": [
+                    "c1ccccc1CCO",
+                    "c1ccncc1CC",
+                    "C1CCCCC1CO",
+                    "c1ccc2ccccc2c1C",
+                    "c1cc(F)ccc1CN",
+                    "C1CCNCC1CC",
+                    "c1ccsc1CCC",
+                    "c1ccoc1CN",
+                    "C1CCOC1CCO",
+                    "c1cnc2ccccc2c1",
+                    "C1CN(C)CCN1C",
+                    "c1ccc(Cl)cc1CO",
+                ],
+                "y_true": [5.0 + 0.1 * i for i in range(12)],
+                "y_lower": [4.8 + 0.1 * i for i in range(12)],
+                "y_upper": [5.2 + 0.1 * i for i in range(12)],
+            }
+        )
+    }
+    _, table = cv.shared_scaffold_folds(frames, n_outer=1, n_inner=2)
+    finetune_descriptors = pl.DataFrame(
+        {"Molecule_Name": [f"m{i}" for i in range(12)], "d1": [float(i) for i in range(12)]}
+    )
+
+    calls: list[dict] = []
+
+    class _StubModel:
+        def __init__(self, targets, pretrain_dir=None, descriptor_columns=None, **kwargs):
+            self.targets = list(targets)
+            self.descriptor_columns = descriptor_columns
+
+        def fit(self, smiles, y, descriptors=None, **kwargs):
+            calls.append({"stage": "fit", "n_smiles": len(smiles), "descriptors": descriptors})
+            return self
+
+        def predict(self, smiles, return_uncertainty=False, descriptors=None):
+            calls.append({"stage": "predict", "n_smiles": len(smiles), "descriptors": descriptors})
+            return np.zeros((len(smiles), len(self.targets)))
+
+        def pretrain_wide(self, *args, **kwargs):
+            return self
+
+    monkeypatch.setattr(graph_models, "ChempropMultitargetModel", _StubModel)
+    monkeypatch.setattr(aux_training.C, "PROJECT_ROOT", tmp_path)
+    pretrain_dir = tmp_path / ".chemprop_pretrain" / "pretrain"
+    (pretrain_dir / "model_0").mkdir(parents=True)
+    (pretrain_dir / "model_0" / "best.pt").touch()
+
+    oof = aux_training.run_cv_pretrained(
+        frames,
+        pl.DataFrame({"smiles_std": [], "e1": []}),
+        method_name="pretrain",
+        assignments=table,
+        folds=[1],
+        finetune_descriptors=finetune_descriptors,
+        descriptor_columns=["d1"],
+    )
+
+    assert oof.height > 0
+    assert calls, "fit/predict were never called"
+    for call in calls:
+        assert call["descriptors"] is not None
+        assert call["descriptors"].shape == (call["n_smiles"], 1)

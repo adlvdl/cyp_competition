@@ -210,3 +210,19 @@ def test_flag_contention_returns_typed_empty_frame_when_absent(tmp_path: Path) -
     assert result.height == 0
     assert "ratio" in result.columns
     assert "baseline_seconds" in result.columns
+
+
+def test_load_treats_an_empty_file_as_absent(tmp_path):
+    """A touched-but-empty log must not raise.
+
+    scripts/watch_contention.sh tails the CSV, so it has to exist before the run
+    starts -- the documented way to monitor a notebook is to touch it first. Polars
+    raises NoDataError on an empty CSV, which killed a real 09 run on its first
+    `record` call before this was fixed.
+    """
+    path = tmp_path / "timings.csv"
+    path.touch()
+    assert timings.load(path).height == 0
+
+    timings.record(path, stage="s", method="m", endpoint="e", mode="full", seconds=1.0)
+    assert timings.load(path).height == 1

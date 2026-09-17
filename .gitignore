@@ -250,3 +250,7 @@ experiments/**/cache/*_quick.*
 
 # watch_contention.sh rolling baselines -- runtime scratch, not a result.
 experiments/**/contention_snapshots/.history/
+
+# Featurization caches (09) -- pure function of the data snapshot, no model fits.
+experiments/**/cache/*.npy
+experiments/**/cache/a3_descriptors_*.parquet

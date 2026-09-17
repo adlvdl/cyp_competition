@@ -1,0 +1,9 @@
+arm,endpoint,n,spearman
+pubchem,CYP1A2,7060,0.5368
+pubchem,CYP2C9,6425,0.6697
+pubchem,CYP2D6,7465,0.4482
+pubchem,CYP3A4,11675,0.796
+pubchem_pharmacophore,CYP1A2,7060,0.5153
+pubchem_pharmacophore,CYP2C9,6425,0.6463
+pubchem_pharmacophore,CYP2D6,7465,0.426
+pubchem_pharmacophore,CYP3A4,11675,0.7848

@@ -42,9 +42,16 @@ def _empty() -> pl.DataFrame:
 
 
 def load(path: Path | str) -> pl.DataFrame:
-    """Read the timing log, or an empty frame with the right schema if absent."""
+    """Read the timing log, or an empty frame with the right schema if absent.
+
+    A present-but-empty file is treated as absent rather than raising. That state is
+    routine rather than exotic: `scripts/watch_contention.sh` needs the log to exist
+    before the run starts so it has something to tail, so the normal way to monitor a
+    notebook is to `touch` the CSV first -- which would otherwise make the very first
+    `record` call fail with `NoDataError` and kill the run it was meant to observe.
+    """
     path = Path(path)
-    if not path.exists():
+    if not path.exists() or path.stat().st_size == 0:
         return _empty()
     return pl.read_csv(path)
 
@@ -247,9 +254,10 @@ def flag_contention(
     # folds are themselves slow -- by which point "contention" is the wrong word for
     # what is happening anyway.
     with_baseline = frame.with_columns(
-        pl.col("seconds").quantile(0.25, interpolation="lower").over(["stage", "method"]).alias(
-            "baseline_seconds"
-        )
+        pl.col("seconds")
+        .quantile(0.25, interpolation="lower")
+        .over(["stage", "method"])
+        .alias("baseline_seconds")
     )
     return (
         with_baseline.filter(

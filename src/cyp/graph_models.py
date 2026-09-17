@@ -665,17 +665,29 @@ class ChempropMultitargetModel(ChempropModel):
     to replace it. See `multitask.run_cv_multitarget`.
     """
 
-    def __init__(self, targets: list[str], **kwargs) -> None:
+    def __init__(
+        self, targets: list[str], descriptor_columns: list[str] | None = None, **kwargs
+    ) -> None:
         """
         Args:
             targets: Endpoint names, in the column order used by `fit` and returned
                 by `predict`. Stored so both agree without the caller re-specifying.
+            descriptor_columns: Names for extra molecule-level descriptors (e.g.
+                `pharmacophore.DESCRIPTOR_COLUMNS`) to concatenate onto the learned
+                representation before the FFN head, via chemprop's own
+                `--descriptors-columns`. When set, `fit` and `predict` both require a
+                `descriptors` array of shape `(n_compounds, len(descriptor_columns))`
+                -- chemprop needs the same columns present, by name, in the training,
+                validation and test CSVs, or the FFN's input width would not match
+                between fit and predict. None (default) trains a plain model with no
+                extra columns, unchanged from before this argument existed.
             **kwargs: Forwarded to `ChempropModel`.
         """
         if not targets:
             raise ValueError("targets must name at least one endpoint")
         super().__init__(**kwargs)
         self.targets = list(targets)
+        self.descriptor_columns = list(descriptor_columns) if descriptor_columns else None
 
     def _base_train_args(self, target_col: str) -> list[str]:
         """Same as the single-target version but naming every target column.
@@ -715,7 +727,40 @@ class ChempropMultitargetModel(ChempropModel):
             args += ["--from-foundation", self.from_foundation]
         if self.uncertainty_method == "ensemble":
             args += ["--ensemble-size", str(self.ensemble_size)]
+        if self.descriptor_columns:
+            args += ["--descriptors-columns", *self.descriptor_columns]
         return args
+
+    def _check_descriptors(
+        self, descriptors: np.ndarray | None, n_compounds: int
+    ) -> np.ndarray | None:
+        """Validate `descriptors` against `descriptor_columns`, in both directions.
+
+        Both a model built with `descriptor_columns` fed no array, and one built
+        without it fed an array, would otherwise fail silently: chemprop would either
+        train a plain model no one asked for, or ignore an array whose columns were
+        never named. Both are the kind of mismatch that only shows up as a confusing
+        result days later, so this raises immediately instead.
+        """
+        if self.descriptor_columns is None:
+            if descriptors is not None:
+                raise ValueError(
+                    "descriptors were given but this model has no descriptor_columns "
+                    "set -- pass descriptor_columns to __init__ to use them"
+                )
+            return None
+        if descriptors is None:
+            raise ValueError(
+                f"this model was built with descriptor_columns={self.descriptor_columns} "
+                "and requires a matching `descriptors` array"
+            )
+        descriptors = np.asarray(descriptors, dtype=float)
+        if descriptors.shape != (n_compounds, len(self.descriptor_columns)):
+            raise ValueError(
+                f"descriptors must have shape ({n_compounds}, "
+                f"{len(self.descriptor_columns)}), got {descriptors.shape}"
+            )
+        return descriptors
 
     def _write_wide_csv(
         self,
@@ -723,6 +768,7 @@ class ChempropMultitargetModel(ChempropModel):
         y: np.ndarray,
         path: Path,
         sample_weight: np.ndarray | None = None,
+        descriptors: np.ndarray | None = None,
     ) -> None:
         """Write a multi-target CSV, leaving unmeasured cells empty.
 
@@ -737,6 +783,9 @@ class ChempropMultitargetModel(ChempropModel):
             columns[target] = [None if np.isnan(v) else float(v) for v in column]
         if sample_weight is not None:
             columns["weight"] = np.asarray(sample_weight, dtype=float).flatten().tolist()
+        if descriptors is not None:
+            for i, name in enumerate(self.descriptor_columns):
+                columns[name] = descriptors[:, i].tolist()
         pl.DataFrame(columns).write_csv(path)
 
     def pretrain_wide(
@@ -745,6 +794,8 @@ class ChempropMultitargetModel(ChempropModel):
         y_train: np.ndarray,
         smiles_val: list[str],
         y_val: np.ndarray,
+        descriptors_train: np.ndarray | None = None,
+        descriptors_val: np.ndarray | None = None,
     ) -> ChempropMultitargetModel:
         """Pretrain on an auxiliary multi-target matrix, keeping the same head shape.
 
@@ -757,16 +808,28 @@ class ChempropMultitargetModel(ChempropModel):
         fold fine-tunes from the same encoder -- and because the auxiliary data is
         external to the challenge, the same checkpoint is legitimately reusable across
         folds without leaking a fold's own labels.
+
+        `descriptors_train`/`descriptors_val` are required (and only accepted) when
+        this model was built with `descriptor_columns`, for a reason that is easy to
+        miss: `--checkpoint` restores the FFN's weights whole, including its input
+        width. A checkpoint pretrained without descriptor columns has a narrower FFN
+        than a fine-tuning model built with them, and chemprop fails the load with a
+        matrix-shape error rather than adapting the width -- confirmed directly against
+        the chemprop CLI, not inferred. So the descriptor columns have to be present
+        at *both* stages, on the same names, even though the pretraining corpus has no
+        genuine use for them beyond keeping the architecture loadable.
         """
         y_train = np.asarray(y_train, dtype=float)
         y_val = np.asarray(y_val, dtype=float)
         if y_train.ndim != 2 or y_train.shape[1] != len(self.targets):
             raise ValueError(f"y_train must be (n, {len(self.targets)}), got {y_train.shape}")
+        descriptors_train = self._check_descriptors(descriptors_train, len(smiles_train))
+        descriptors_val = self._check_descriptors(descriptors_val, len(smiles_val))
 
         tmp = Path(tempfile.gettempdir())
         train_csv, val_csv = tmp / "cyp_cp_mt_pre_train.csv", tmp / "cyp_cp_mt_pre_val.csv"
-        self._write_wide_csv(list(smiles_train), y_train, train_csv)
-        self._write_wide_csv(list(smiles_val), y_val, val_csv)
+        self._write_wide_csv(list(smiles_train), y_train, train_csv, descriptors=descriptors_train)
+        self._write_wide_csv(list(smiles_val), y_val, val_csv, descriptors=descriptors_val)
 
         if self.pretrain_dir.exists():
             shutil.rmtree(self.pretrain_dir)
@@ -797,6 +860,8 @@ class ChempropMultitargetModel(ChempropModel):
         y_val: np.ndarray | None = None,
         sample_weight: np.ndarray | None = None,
         target_col: str = "target",
+        descriptors: np.ndarray | None = None,
+        descriptors_val: np.ndarray | None = None,
     ) -> ChempropMultitargetModel:
         """Train on a `(n_compounds, n_targets)` matrix with NaN for unmeasured.
 
@@ -806,12 +871,19 @@ class ChempropMultitargetModel(ChempropModel):
         weighting is not available here at all, so a caller that needs it has to fall
         back to single-task models -- see `aux_training.run_cv_selection_corrected`,
         which averages its per-endpoint propensities for exactly this reason.
+
+        `descriptors`/`descriptors_val` are required (and only accepted) when this
+        model was built with `descriptor_columns` -- see `_check_descriptors`. When
+        `smiles_val`/`y_val` are omitted and an internal split is taken, `descriptors`
+        is split the same way so every row's descriptor stays paired with its own
+        compound.
         """
         y_train = np.asarray(y_train, dtype=float)
         if y_train.ndim != 2 or y_train.shape[1] != len(self.targets):
             raise ValueError(f"y_train must be (n, {len(self.targets)}), got {y_train.shape}")
 
         smiles_train = list(smiles_train)
+        descriptors = self._check_descriptors(descriptors, len(smiles_train))
         if sample_weight is not None:
             sample_weight = np.asarray(sample_weight, dtype=float).flatten()
             if len(sample_weight) != len(smiles_train):
@@ -831,6 +903,11 @@ class ChempropMultitargetModel(ChempropModel):
             y_train = y_train[train_idx]
             if sample_weight is not None:
                 sample_weight = sample_weight[train_idx]
+            if descriptors is not None:
+                descriptors_val = descriptors[val_idx]
+                descriptors = descriptors[train_idx]
+        else:
+            descriptors_val = self._check_descriptors(descriptors_val, len(smiles_val))
 
         tmp = Path(tempfile.gettempdir())
         train_csv, val_csv = tmp / "cyp_cp_mt_train.csv", tmp / "cyp_cp_mt_val.csv"
@@ -838,8 +915,10 @@ class ChempropMultitargetModel(ChempropModel):
         # the validation rows get a uniform 1.0 -- early stopping should measure fit
         # quality, not the reweighting.
         val_weight = None if sample_weight is None else np.ones(len(smiles_val))
-        self._write_wide_csv(smiles_train, y_train, train_csv, sample_weight)
-        self._write_wide_csv(smiles_val, np.asarray(y_val, dtype=float), val_csv, val_weight)
+        self._write_wide_csv(smiles_train, y_train, train_csv, sample_weight, descriptors)
+        self._write_wide_csv(
+            smiles_val, np.asarray(y_val, dtype=float), val_csv, val_weight, descriptors_val
+        )
 
         if self.model_dir.exists():
             shutil.rmtree(self.model_dir)
@@ -873,17 +952,31 @@ class ChempropMultitargetModel(ChempropModel):
         return self
 
     def predict(
-        self, smiles_test: list[str], return_uncertainty: bool = False
+        self,
+        smiles_test: list[str],
+        return_uncertainty: bool = False,
+        descriptors: np.ndarray | None = None,
     ) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
         """Predict every endpoint at once. Returns `(n_compounds, n_targets)` in
         `self.targets` order, or `(y_pred, y_unc)` of that same shape when
         `return_uncertainty=True` -- see `ChempropModel.predict` for what `y_unc`
-        means per method (always a variance)."""
+        means per method (always a variance).
+
+        `descriptors` is required when this model was built with `descriptor_columns`
+        -- the FFN's input width was fixed at fit time to include them, so predicting
+        without them would not merely give a worse answer, it would not run at all.
+        """
         if return_uncertainty and self.uncertainty_method is None:
             raise ValueError("return_uncertainty=True needs uncertainty_method set at construction")
+        smiles_test = list(smiles_test)
+        descriptors = self._check_descriptors(descriptors, len(smiles_test))
         tmp = Path(tempfile.gettempdir())
         test_csv, pred_csv = tmp / "cyp_cp_mt_test.csv", tmp / "cyp_cp_mt_preds.csv"
-        pl.DataFrame({"smiles": list(smiles_test)}).write_csv(test_csv)
+        test_columns: dict[str, list] = {"smiles": smiles_test}
+        if descriptors is not None:
+            for i, name in enumerate(self.descriptor_columns):
+                test_columns[name] = descriptors[:, i].tolist()
+        pl.DataFrame(test_columns).write_csv(test_csv)
 
         cli_args = [
             "predict",
@@ -893,6 +986,8 @@ class ChempropMultitargetModel(ChempropModel):
             "--preds-path",
             str(pred_csv),
         ]
+        if self.descriptor_columns:
+            cli_args += ["--descriptors-columns", *self.descriptor_columns]
         if return_uncertainty:
             cli_args += [
                 "--uncertainty-method",
