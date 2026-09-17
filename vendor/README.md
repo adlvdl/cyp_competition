@@ -35,3 +35,48 @@ The `__init__.py` files in `cyp_challenge_tutorial/` and `cyp_challenge_tutorial
 are added locally to make the packages importable; upstream does not ship them.
 
 The tutorial's notebooks are not vendored — read them upstream.
+
+## `molgpka/`
+
+Per-atom pKa prediction, adapted from [Xundrug/MolGpKa](https://github.com/Xundrug/MolGpKa)
+(Pan et al., *J. Med. Chem.* 2021) — used by `notebooks/10_pka_features.py` to weight
+CYP2D6's basic-nitrogen feature by predicted protonation rather than a binary
+sp3-nitrogen heuristic.
+
+- **Upstream commit:** `4dc8352` (2024-01-11, latest on `master`; repo appears unmaintained
+  since)
+- **Fetched:** 2026-09-16
+- **License:** MIT (`molgpka/LICENSE.md`) — note the file's copyright line reads
+  "Copyright (c) 2017-Present OpenNMT", which is a copy-paste error in upstream's own
+  repo, not ours. The MIT terms are otherwise unambiguous; cite Pan et al. 2021, not
+  OpenNMT.
+
+**This entry is an adaptation, not a pin — unlike `cyp_challenge_tutorial/` above.**
+Upstream's `GCNNet` depends on `torch_geometric.nn.GCNConv`/`GlobalAttention` and
+`torch_scatter.scatter_add`. `torch_scatter` is a compiled extension pinned to an exact
+torch build with no reliable prebuilt wheel for Apple Silicon, which would mean a
+from-source compile for a single ~60-line layer. `molgpka/net.py` reimplements that
+layer's exact math (symmetric-normalised GCN propagation, gated attention pooling) in
+plain `torch.Tensor` ops instead. The two `.pth` weight files are upstream's own,
+unmodified — parameter names in the rewrite match upstream's exactly, and both load
+with zero missing/unexpected keys.
+
+Because this is a rewrite rather than a copy, there is no upstream artifact to diff
+against for correctness. Verified instead against chemical plausibility (nicotine's
+pyrrolidine N predicts pKa 8.42 against an experimental 8.02; `tests/test_pka.py`
+pins known amine/acid examples) — a different and weaker guarantee than
+`cyp_challenge_tutorial/`'s bit-for-bit match to the scoring backend. Do not add
+another vendor entry this way without a comparably strong verification step.
+
+`ionization_sites.py` (candidate site detection via `smarts_pattern.tsv`, upstream's
+own 143-pattern table) and `descriptor.py` (atom featurisation) are copied near-verbatim,
+fixing one bug found in the original: `ionization_group.py` resolved its SMARTS file
+path from the process's working directory rather than the module's own location
+(upstream issue #9), which only worked when a script happened to run from
+`./MolGpKa/src`. Fixed here to resolve relative to `__file__`.
+
+Not vendored: the training pipeline, `protonate.py` (upstream issue #20 — raises
+`OverflowError` on essentially every carboxylic acid against a recent RDKit; not
+needed for per-atom pKa prediction), `GATNet`/`MPNNNet` (unused by inference;
+`MPNNNet` does not run in the original repo either — it references undefined names),
+and the ~193MB of training data and benchmark sets.

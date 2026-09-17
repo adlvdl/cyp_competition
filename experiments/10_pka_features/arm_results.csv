@@ -1,0 +1,13 @@
+endpoint,arm,spearman
+CYP1A2,ecfp,0.4214
+CYP1A2,ecfp+pharmacophore_2d,0.4245
+CYP1A2,ecfp+pka_weight,0.4158
+CYP2C9,ecfp,0.3713
+CYP2C9,ecfp+pharmacophore_2d,0.3802
+CYP2C9,ecfp+pka_weight,0.3739
+CYP2D6,ecfp,0.3365
+CYP2D6,ecfp+pharmacophore_2d,0.3684
+CYP2D6,ecfp+pka_weight,0.3681
+CYP3A4,ecfp,0.6048
+CYP3A4,ecfp+pharmacophore_2d,0.6081
+CYP3A4,ecfp+pka_weight,0.607
