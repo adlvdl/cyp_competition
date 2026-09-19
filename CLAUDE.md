@@ -251,6 +251,36 @@ Simulating at these moments reproduces the board (0.747 vs 0.7785), the end-to-e
 
 **CYP2D6 does not solve, and the failure is a finding.** Submission 87's board R2 (0.223) exceeds the ceiling implied by its own Spearman (0.361 → pearson 0.376 → ceiling 0.141), so `intersect` correctly refuses. The only consistent reading is that CYP2D6's true blind Pearson is **at least 0.472** — the bivariate-normal conversion underestimates by ~30%, because weak correlations are where a skewed, truncated pIC50 distribution departs furthest from normality. **Treat `pearson_from_spearman` as a lower bound on CYP2D6, not a point estimate.**
 
+### 10_pka_features — a sharper basic-nitrogen feature is selective, and still does not reach the model
+
+09 left one loose end: `pharmacophore.n_basic_nitrogen` is a binary sp3-nitrogen heuristic that scores a strongly basic amine (pKa ~9-10, always charged at pH 7.4) the same as a weakly basic one next to an electron-withdrawing group (pKa ~4-5, always neutral). CYP2D6's pharmacophore is about the *cationic* nitrogen engaging Glu216/Asp301, so the binary version encodes the wrong quantity. `pka.basic_nitrogen_weight` (vendored MolGpKa GCN, `vendor/molgpka/`) replaces it with the Henderson-Hasselbalch fraction protonated from a predicted per-atom pKa. One column swapped, everything else identical to 09's `ecfp+pharmacophore_2d` — the cleanest available test of whether feature *sharpness*, not shape, was the limit.
+
+**The direct check is the strongest CYP2D6-selective signal in any notebook** (`direct_check.csv`, Spearman against potency):
+
+| endpoint | binary basic-N | pKa weight | % nonzero |
+|:--|--:|--:|--:|
+| CYP1A2 | −0.134 | −0.017 | 27.3 |
+| CYP2C9 | −0.157 | −0.069 | 25.0 |
+| CYP2D6 | **0.276** | **0.342** | 53.9 |
+| CYP3A4 | −0.065 | −0.002 | 24.9 |
+
+Sharpening the feature raises CYP2D6 by +0.066 and moves the other three *toward zero*. This is the selectivity pattern 09 looked for and did not find — the mechanism is real and the continuous feature expresses it better.
+
+**It does not survive into a model.** LightGBM/ECFP4-2048, same folds and harness as 09 (5x5 scaffold, seed 0), scored in Spearman:
+
+| endpoint | ecfp | +pharmacophore_2d | +pka_weight | pka lift |
+|:--|--:|--:|--:|--:|
+| CYP1A2 | 0.4214 | 0.4245 | 0.4158 | −0.006 |
+| CYP2C9 | 0.3713 | 0.3802 | 0.3739 | +0.003 |
+| CYP2D6 | 0.3365 | 0.3684 | **0.3681** | +0.032 |
+| CYP3A4 | 0.6048 | 0.6081 | 0.6070 | +0.002 |
+
+`ecfp+pka_weight` and `ecfp+pharmacophore_2d` land within 0.0003 of each other on CYP2D6 (+0.0316 vs +0.0319 over ECFP) — a dead heat, on point estimates that 15 folds cannot separate anyway. **A 24% better univariate correlation bought nothing once ECFP was in the model**, because the binary indicator already tells a tree which compounds have the atom and ECFP's neighbouring bits supply enough context to grade it.
+
+**The rule this adds:** improving an auxiliary feature's correlation with the target does not predict a model gain when a rich representation is already present — check the lift against the *existing feature set*, not against nothing. Same shape as 08's coverage lesson from a different direction: there the auxiliary was redundant in *coverage*, here it is redundant in *information*.
+
+Combined with 09 and 11, three independent routes to the CYP2D6 basic-nitrogen pharmacophore (3D geometry, predicted pKa, docked protein contacts) all confirm the mechanism and none beat the incumbent. **The pharmacophore is not the bottleneck.** `02`'s scorecard is — lowest test-NN similarity (0.469), highest extrapolation (10.8%). Do not open a fourth pharmacophore route.
+
 ### 11_docking_3d (2026-09-19) — structure-based 3D: docking helps through protein contacts, not through Uni-Mol
 
 09 closed the ligand-side 3D question (explicit pharmacophore geometry hurt a pretrained encoder). This asked what 09 couldn't: does the *protein* matter. **gnina could not be used** — CUDA-only (sole v1.3.3 asset is a 1.96 GB CUDA-12.8 Linux binary), and this machine is an arm64 Mac with no NVIDIA GPU. **smina** (the Vina fork gnina derives from) substitutes; `src/cyp/docking.py`, `src/cyp/plif.py` (ProLIF interaction fingerprints), `src/cyp/unimol.py`.

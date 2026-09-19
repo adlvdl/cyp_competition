@@ -1,0 +1,6 @@
+endpoint,expected_low,expected_high,basis,board_05,board_07,cv_expected_unplaced
+CYP1A2,0.4223,0.5111,"simulated, bracketed by back-test error",0.6887,0.6559,0.8216
+CYP2C9,0.5567,0.5567,scored (identical vector to 05),0.5567,0.5975,0.631
+CYP2D6,0.8902,0.8902,scored (identical vector to 07),1.3099,0.8902,0.9251
+CYP3A4,0.5586,0.5586,scored (identical vector to 05),0.5586,0.6725,0.4864
+MA (macro),0.6069,0.6292,arithmetic mean of the four,0.7785,0.704,0.716

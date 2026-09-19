@@ -1,0 +1,5 @@
+endpoint,solved_mean,solved_sd,pearson,disagreement,status
+CYP1A2,4.378,1.08,0.74,0.0029,solved
+CYP2C9,4.871,1.2,0.779,0.0039,solved
+CYP2D6,,,,,no consistent population
+CYP3A4,4.856,1.34,0.79,0.0005,solved

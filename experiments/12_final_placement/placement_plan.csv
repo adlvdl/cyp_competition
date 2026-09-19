@@ -1,0 +1,5 @@
+endpoint,regime,recoverable_r2,from_mean,from_sd,to_mean,to_sd,board_strae_05,board_strae_07
+CYP1A2,placed at ST-RAE optimum (solved population),0.2351,4.9,0.826,4.485,0.648,0.6887,0.6559
+CYP2C9,unplaced (gated: nothing to recover),0.0182,4.816,0.782,4.816,0.782,0.5567,0.5975
+CYP2D6,reuse scored placement (population unidentifiable),0.8676,4.53,0.531,3.114,0.538,1.3099,0.8902
+CYP3A4,unplaced (gated: nothing to recover),0.0254,4.684,0.941,4.684,0.941,0.5586,0.6725

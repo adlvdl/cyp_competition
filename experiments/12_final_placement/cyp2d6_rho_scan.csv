@@ -1,0 +1,9 @@
+forced_pearson,status,solved_mean,solved_sd,disagreement,pct_below_4,pct_below_2,pct_below_1
+0.472,no solution,,,,,,
+0.5,consistent,3.302,1.235,0.0016,71.4,14.6,3.1
+0.56,consistent,2.817,1.72,0.0019,75.4,31.7,14.5
+0.6,consistent,2.725,1.795,0.0012,76.1,34.3,16.8
+0.65,consistent,2.626,1.875,0.0011,76.8,36.9,19.3
+0.7,consistent,2.537,1.945,0.0004,77.4,39.1,21.5
+0.8,consistent,2.38,2.06,0.0007,78.4,42.7,25.1
+0.84,consistent,2.323,2.1,0.0016,78.8,43.9,26.4

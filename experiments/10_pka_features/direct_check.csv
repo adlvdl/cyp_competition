@@ -1,0 +1,5 @@
+endpoint,n,binary_basicN_spearman,pka_weight_spearman,pct_nonzero_weight
+CYP1A2,1412,-0.1336,-0.0167,27.3
+CYP2C9,1285,-0.1566,-0.0689,25.0
+CYP2D6,1493,0.276,0.3421,53.9
+CYP3A4,2335,-0.0647,-0.0015,24.9

@@ -1,0 +1,5 @@
+endpoint,final_mean,final_sd,final_min,final_max,ties_from_floor,spearman_vs_raw
+CYP1A2,4.485,0.648,2.641,5.829,0,1.0
+CYP2C9,4.816,0.782,2.814,6.904,0,1.0
+CYP2D6,3.114,0.538,1.793,4.769,0,0.918542
+CYP3A4,4.684,0.941,2.01,6.861,0,1.0
