@@ -666,7 +666,11 @@ class ChempropMultitargetModel(ChempropModel):
     """
 
     def __init__(
-        self, targets: list[str], descriptor_columns: list[str] | None = None, **kwargs
+        self,
+        targets: list[str],
+        descriptor_columns: list[str] | None = None,
+        atom_feature_width: int | None = None,
+        **kwargs,
     ) -> None:
         """
         Args:
@@ -681,6 +685,18 @@ class ChempropMultitargetModel(ChempropModel):
                 validation and test CSVs, or the FFN's input width would not match
                 between fit and predict. None (default) trains a plain model with no
                 extra columns, unchanged from before this argument existed.
+            atom_feature_width: Width of a per-atom extra feature vector (e.g.
+                `plif.atom_features`' multi-hot interaction-type columns) to
+                concatenate onto each atom's own learned representation before
+                message passing, via chemprop's `--atom-features-path`. Unlike
+                `descriptor_columns`, this is a *molecule-graph* input, not a CSV
+                column, so `fit`/`predict` take a path to a `.npz` file
+                (`plif.atom_features_npz`'s output) rather than an in-memory array
+                -- chemprop reads atom features directly from that file, one array
+                per CSV row in order. Set here purely so the encoder's message-
+                passing layer is built with the right input width; the actual data
+                is supplied per call. None (default) is unchanged from before this
+                argument existed.
             **kwargs: Forwarded to `ChempropModel`.
         """
         if not targets:
@@ -688,6 +704,7 @@ class ChempropMultitargetModel(ChempropModel):
         super().__init__(**kwargs)
         self.targets = list(targets)
         self.descriptor_columns = list(descriptor_columns) if descriptor_columns else None
+        self.atom_feature_width = atom_feature_width
 
     def _base_train_args(self, target_col: str) -> list[str]:
         """Same as the single-target version but naming every target column.
@@ -761,6 +778,46 @@ class ChempropMultitargetModel(ChempropModel):
                 f"{len(self.descriptor_columns)}), got {descriptors.shape}"
             )
         return descriptors
+
+    def _check_atom_features_path(
+        self, atom_features_path: Path | None, n_compounds: int
+    ) -> Path | None:
+        """Validate an atom-features `.npz` against `atom_feature_width`, in both
+        directions -- the file-based counterpart to `_check_descriptors`.
+
+        Only the row count and the first array's column count are checked, not
+        every array's shape: chemprop's own CLI raises on a genuinely malformed
+        file, and eagerly loading every array here (a docking-derived one can be
+        tens of thousands of atoms across a full endpoint) would burn the memory
+        this check exists to avoid spending twice.
+        """
+        if self.atom_feature_width is None:
+            if atom_features_path is not None:
+                raise ValueError(
+                    "atom_features_path was given but this model has no "
+                    "atom_feature_width set -- pass atom_feature_width to __init__ "
+                    "to use it"
+                )
+            return None
+        if atom_features_path is None:
+            raise ValueError(
+                f"this model was built with atom_feature_width="
+                f"{self.atom_feature_width} and requires a matching "
+                "atom_features_path"
+            )
+        with np.load(atom_features_path) as archive:
+            if len(archive.files) != n_compounds:
+                raise ValueError(
+                    f"{atom_features_path} has {len(archive.files)} arrays, expected "
+                    f"one per compound ({n_compounds})"
+                )
+            first = archive["arr_0"]
+            if first.ndim != 2 or first.shape[1] != self.atom_feature_width:
+                raise ValueError(
+                    f"{atom_features_path}'s arrays must be (n_atoms, "
+                    f"{self.atom_feature_width}), got an array shaped {first.shape}"
+                )
+        return atom_features_path
 
     def _write_wide_csv(
         self,
@@ -862,6 +919,7 @@ class ChempropMultitargetModel(ChempropModel):
         target_col: str = "target",
         descriptors: np.ndarray | None = None,
         descriptors_val: np.ndarray | None = None,
+        atom_features_path: Path | None = None,
     ) -> ChempropMultitargetModel:
         """Train on a `(n_compounds, n_targets)` matrix with NaN for unmeasured.
 
@@ -877,6 +935,24 @@ class ChempropMultitargetModel(ChempropModel):
         `smiles_val`/`y_val` are omitted and an internal split is taken, `descriptors`
         is split the same way so every row's descriptor stays paired with its own
         compound.
+
+        `atom_features_path` is the equivalent requirement for `atom_feature_width`,
+        but takes a **different code path through chemprop's CLI**, confirmed
+        directly against the installed version (2.2.1) rather than assumed:
+        `--atom-features-path` is read once per training invocation and applied
+        identically to every split chemprop parses, so it only works when
+        `--data-path` names a **single combined file** that chemprop splits
+        internally via `--splits-file` -- the three-separate-train/val/test-file
+        convention every other `fit` in this module uses cannot pair an atom-feature
+        array with more than one of those files at once (each file has its own row
+        count, and the array must match whichever CSV chemprop is currently
+        parsing). `smiles_train`/`smiles_val` are therefore concatenated into one
+        CSV here, with a `--splits-file` JSON recording which rows are which,
+        instead of the two-file pattern above. This means, unlike `descriptors`,
+        `atom_features_path` **requires an explicit `smiles_val`/`y_val`** --
+        chemprop's own internal splitter (used when they are omitted) would put
+        rows in an order this method cannot predict, and the atom-features array's
+        row order has to be decided before calling it.
         """
         y_train = np.asarray(y_train, dtype=float)
         if y_train.ndim != 2 or y_train.shape[1] != len(self.targets):
@@ -891,6 +967,13 @@ class ChempropMultitargetModel(ChempropModel):
                     f"sample_weight must have one entry per compound: got "
                     f"{len(sample_weight)} for {len(smiles_train)} compounds"
                 )
+
+        if atom_features_path is not None and (smiles_val is None or y_val is None):
+            raise ValueError(
+                "atom_features_path requires an explicit smiles_val/y_val split -- "
+                "see the docstring for why an internal random split cannot be used "
+                "with atom features"
+            )
 
         if smiles_val is None or y_val is None:
             rng = np.random.default_rng(42)
@@ -908,6 +991,42 @@ class ChempropMultitargetModel(ChempropModel):
                 descriptors = descriptors[train_idx]
         else:
             descriptors_val = self._check_descriptors(descriptors_val, len(smiles_val))
+            # Existence checked here too, not only inside `_fit_with_atom_features`:
+            # a model built with `atom_feature_width` but given no
+            # `atom_features_path` would otherwise silently take the plain
+            # two-file training path below and train without atom features at all
+            # -- exactly the "confusing result days later" `_check_descriptors`
+            # exists to prevent for descriptors. The shape check happens later,
+            # against `len(smiles_train) + len(smiles_val)`
+            # (`_fit_with_atom_features` does it): the array covers both splits
+            # combined, which `smiles_val`'s count alone cannot validate.
+            if self.atom_feature_width is not None and atom_features_path is None:
+                raise ValueError(
+                    f"this model was built with atom_feature_width="
+                    f"{self.atom_feature_width} and requires a matching "
+                    "atom_features_path"
+                )
+            if self.atom_feature_width is None and atom_features_path is not None:
+                raise ValueError(
+                    "atom_features_path was given but this model has no "
+                    "atom_feature_width set -- pass atom_feature_width to __init__ "
+                    "to use it"
+                )
+
+        if self.model_dir.exists():
+            shutil.rmtree(self.model_dir)
+
+        if atom_features_path is not None:
+            self._fit_with_atom_features(
+                smiles_train,
+                y_train,
+                smiles_val,
+                np.asarray(y_val, dtype=float),
+                target_col,
+                sample_weight,
+                atom_features_path,
+            )
+            return self
 
         tmp = Path(tempfile.gettempdir())
         train_csv, val_csv = tmp / "cyp_cp_mt_train.csv", tmp / "cyp_cp_mt_val.csv"
@@ -919,9 +1038,6 @@ class ChempropMultitargetModel(ChempropModel):
         self._write_wide_csv(
             smiles_val, np.asarray(y_val, dtype=float), val_csv, val_weight, descriptors_val
         )
-
-        if self.model_dir.exists():
-            shutil.rmtree(self.model_dir)
 
         args = [
             "train",
@@ -951,11 +1067,97 @@ class ChempropMultitargetModel(ChempropModel):
         val_csv.unlink(missing_ok=True)
         return self
 
+    def _fit_with_atom_features(
+        self,
+        smiles_train: list[str],
+        y_train: np.ndarray,
+        smiles_val: list[str],
+        y_val: np.ndarray,
+        target_col: str,
+        sample_weight: np.ndarray | None,
+        atom_features_path: Path,
+    ) -> None:
+        """The single-combined-file training path `atom_features_path` requires.
+
+        `atom_features_path` must already cover exactly `smiles_train + smiles_val`,
+        in that concatenated order -- this does not slice or reorder it, since doing
+        so would mean reading and rewriting a `.npz` that may hold tens of thousands
+        of per-atom arrays for no benefit over building it in the right order once.
+        `plif.atom_features_npz`'s `names_order`/`smiles_order` are exactly this
+        concatenated order when the caller builds them that way.
+        """
+        import json
+
+        n_train, n_val = len(smiles_train), len(smiles_val)
+        self._check_atom_features_path(atom_features_path, n_train + n_val)
+
+        tmp = Path(tempfile.gettempdir())
+        combined_csv = tmp / "cyp_cp_mt_atomfeat_combined.csv"
+        splits_json = tmp / "cyp_cp_mt_atomfeat_splits.json"
+
+        combined_weight = None
+        if sample_weight is not None:
+            # Validation rows get uniform weight 1.0, same convention as the
+            # two-file path -- early stopping should measure fit quality, not
+            # whatever reweighting the training rows carry.
+            combined_weight = np.concatenate([sample_weight, np.ones(n_val)])
+        self._write_wide_csv(
+            smiles_train + smiles_val,
+            np.vstack([y_train, y_val]),
+            combined_csv,
+            combined_weight,
+            descriptors=None,  # descriptor_columns + atom_features_path together
+            # is not a combination this repo has needed yet; _check_descriptors
+            # already rejects a descriptors array with no descriptor_columns set,
+            # so a caller trying to combine them gets a clear error, not a silent
+            # drop of one or the other.
+        )
+        # Chemprop's test split is required by the CLI but plays no role here --
+        # `fit` never reads chemprop's own test-set metrics, only the saved
+        # checkpoint -- so it is the same rows as validation rather than a third
+        # carve-out this method has no use for.
+        splits = [
+            {
+                "train": list(range(n_train)),
+                "val": list(range(n_train, n_train + n_val)),
+                "test": list(range(n_train, n_train + n_val)),
+            }
+        ]
+        splits_json.write_text(json.dumps(splits))
+
+        args = [
+            "train",
+            "--data-path",
+            str(combined_csv),
+            "--splits-file",
+            str(splits_json),
+            *self._base_train_args(target_col),
+            "--atom-features-path",
+            str(atom_features_path),
+            "--epochs",
+            str(self.epochs),
+            "--save-dir",
+            str(self.model_dir),
+        ]
+        if sample_weight is not None:
+            args += ["-w", "weight"]
+
+        pretrain_ckpt = self.pretrain_dir / "model_0" / "best.pt"
+        if pretrain_ckpt.exists():
+            args += self._checkpoint_args(pretrain_ckpt)
+            if self.freeze_encoder:
+                args.append("--freeze-encoder")
+
+        _run_chemprop_cli(args)
+        combined_csv.unlink(missing_ok=True)
+        splits_json.unlink(missing_ok=True)
+
     def predict(
         self,
         smiles_test: list[str],
         return_uncertainty: bool = False,
         descriptors: np.ndarray | None = None,
+        atom_features_path: Path | None = None,
     ) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
         """Predict every endpoint at once. Returns `(n_compounds, n_targets)` in
         `self.targets` order, or `(y_pred, y_unc)` of that same shape when
@@ -965,11 +1167,13 @@ class ChempropMultitargetModel(ChempropModel):
         `descriptors` is required when this model was built with `descriptor_columns`
         -- the FFN's input width was fixed at fit time to include them, so predicting
         without them would not merely give a worse answer, it would not run at all.
+        `atom_features_path` is the equivalent requirement for `atom_feature_width`.
         """
         if return_uncertainty and self.uncertainty_method is None:
             raise ValueError("return_uncertainty=True needs uncertainty_method set at construction")
         smiles_test = list(smiles_test)
         descriptors = self._check_descriptors(descriptors, len(smiles_test))
+        atom_features_path = self._check_atom_features_path(atom_features_path, len(smiles_test))
         tmp = Path(tempfile.gettempdir())
         test_csv, pred_csv = tmp / "cyp_cp_mt_test.csv", tmp / "cyp_cp_mt_preds.csv"
         test_columns: dict[str, list] = {"smiles": smiles_test}
@@ -988,6 +1192,8 @@ class ChempropMultitargetModel(ChempropModel):
         ]
         if self.descriptor_columns:
             cli_args += ["--descriptors-columns", *self.descriptor_columns]
+        if atom_features_path is not None:
+            cli_args += ["--atom-features-path", str(atom_features_path)]
         if return_uncertainty:
             cli_args += [
                 "--uncertainty-method",

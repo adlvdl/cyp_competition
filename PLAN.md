@@ -73,7 +73,7 @@ The hardest-won PXR lesson, and the easiest to ignore under time pressure.
 
 ## Deliberately not doing
 
-- **3D docking / cofolding.** Most PXR top-ten finishers used it, and CYP structures are well resolved, so this is genuinely promising — but it is a multi-week project and there are 16 days. Revisit for the November 3 final deadline.
+- ~~**3D docking / cofolding.**~~ Attempted 2026-09-19 as `notebooks/11_docking_3d.py` (CYP2D6 only — see CLAUDE.md). A protein-contact fingerprint (ProLIF) beat ECFP significantly under LightGBM (p=0.0004); a docked pose fed into Uni-Mol made it *worse* than the free-conformer control. Fixed the chemprop promotion block (zero-padded pretrain descriptors) and ran it: molecule-level PLIF via chemprop (`pubchem_plif`, ST-RAE 0.9665) beat every LGBM arm but still fell short of the shipped `pubchem` incumbent (0.9251); atom-level PLIF via `--atom-features-path` (`chemprop_atom_plif`, 1.0023, trained from scratch — no compatible pretrain checkpoint exists) did worse still. **No docking-derived arm beats what's already shipped.** Not worth resuming without a from-scratch atom-level pretrain bridge (untried) or docking the other three isoforms; docking cost 15.6h for CYP2D6 alone on this machine, not the afternoon originally guessed.
 - **Heavy hyperparameter optimization.** PXR showed HPO pays for tree models and barely moves neural nets. Since the plan bets on graph models, tuning is a poor use of the remaining time.
 - **A second submission per track.** One per team, so there is no hedging.
 

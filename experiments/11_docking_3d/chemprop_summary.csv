@@ -1,0 +1,10 @@
+endpoint,arm,st_rae
+CYP2D6,lgbm_ecfp,1.0628
+CYP2D6,lgbm_unimol_etkdg,1.0453
+CYP2D6,lgbm_unimol_docked,1.0651
+CYP2D6,lgbm_docking_score,1.048
+CYP2D6,lgbm_plif,1.043
+CYP2D6,chemprop_pubchem_docking_score,1.0057
+CYP2D6,chemprop_pubchem_plif,0.9665
+CYP2D6,chemprop_atom_plif,1.0023
+CYP2D6,"pubchem (05 chemprop, reused OOF)",0.9251

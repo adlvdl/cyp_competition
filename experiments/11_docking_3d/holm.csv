@@ -1,0 +1,5 @@
+comparison,p_value,threshold,significant
+CYP2D6:plif-ecfp,0.0004,0.0125,true
+CYP2D6:docking_score-ecfp,0.0038,0.016666666666666666,true
+CYP2D6:unimol_docked-unimol_etkdg,0.0246,0.025,true
+CYP2D6:unimol_etkdg-ecfp,0.1876,0.05,false

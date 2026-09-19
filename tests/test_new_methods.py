@@ -15,6 +15,7 @@ and is worth it because smurff's sampler is the component with a known failure m
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import numpy as np
 import polars as pl
@@ -733,3 +734,177 @@ def test_descriptor_columns_end_to_end_fit_and_predict(tmp_path) -> None:
 
     with pytest.raises(ValueError, match="descriptor_columns"):
         model.predict(smiles)
+
+
+# ── atom-level features, --atom-features-path (notebook 11's docking-derived arm) ──
+#
+# `--atom-features-path` takes a different code path through chemprop's CLI than
+# `--descriptors-columns`: confirmed directly against the installed chemprop
+# (2.2.1) that it is read once per training invocation and applied to whichever
+# CSV chemprop is currently parsing, so it only works when `--data-path` is a
+# single combined file split via `--splits-file` -- the two-separate-files pattern
+# every other test above uses cannot pair one array with two differently-sized
+# CSVs. `_fit_with_atom_features` is the code path that follows from that.
+
+
+def test_atom_feature_width_appears_nowhere_in_train_args() -> None:
+    """`atom_feature_width` only sizes the FFN's expected input; the CLI flag
+    itself is added by `_fit_with_atom_features`, not `_base_train_args` -- unlike
+    `descriptor_columns`, which chemprop reads from the CSV `--data-path` points
+    to, atom features are a arg naming a wholly separate `.npz` file that depends
+    on how `fit` splits its rows, not on anything `_base_train_args` can know."""
+    pytest.importorskip("chemprop")
+    from cyp import graph_models
+
+    model = graph_models.ChempropMultitargetModel(targets=["a"], atom_feature_width=3)
+    assert "--atom-features-path" not in model._base_train_args("ignored")
+
+
+def test_fit_without_atom_features_rejects_a_model_that_needs_them() -> None:
+    pytest.importorskip("chemprop")
+    from cyp import graph_models
+
+    model = graph_models.ChempropMultitargetModel(targets=["a"], atom_feature_width=3)
+    with pytest.raises(ValueError, match="atom_feature_width"):
+        model.fit(
+            ["CCO", "CCN"],
+            np.array([[1.0], [2.0]]),
+            smiles_val=["CCF"],
+            y_val=np.array([[1.0]]),
+        )
+
+
+def test_fit_with_atom_features_rejects_a_model_that_has_none(tmp_path) -> None:
+    pytest.importorskip("chemprop")
+    from cyp import graph_models
+
+    model = graph_models.ChempropMultitargetModel(targets=["a"])
+    with pytest.raises(ValueError, match="atom_feature_width"):
+        model.fit(
+            ["CCO", "CCN"],
+            np.array([[1.0], [2.0]]),
+            smiles_val=["CCF"],
+            y_val=np.array([[1.0]]),
+            atom_features_path=tmp_path / "x.npz",
+        )
+
+
+def test_atom_features_require_an_explicit_validation_split() -> None:
+    """An internal random split reorders `smiles_train`, but an already-written
+    `.npz`'s row order cannot be reordered along with it -- this must raise before
+    chemprop is ever invoked, not silently misalign atoms to the wrong compound."""
+    pytest.importorskip("chemprop")
+    from cyp import graph_models
+
+    model = graph_models.ChempropMultitargetModel(targets=["a"], atom_feature_width=3)
+    with pytest.raises(ValueError, match="explicit smiles_val"):
+        model.fit(
+            ["CCO", "CCN", "CCC"],
+            np.array([[1.0], [2.0], [3.0]]),
+            atom_features_path=Path("/tmp/does_not_need_to_exist.npz"),
+        )
+
+
+def test_atom_features_path_shape_is_checked(tmp_path) -> None:
+    pytest.importorskip("chemprop")
+    from cyp import graph_models
+
+    npz_path = tmp_path / "atom_feats.npz"
+    # 2 compounds' worth of arrays, but fit below claims 3 total (2 train + 1 val).
+    np.savez(npz_path, np.zeros((4, 3)), np.zeros((5, 3)))
+    model = graph_models.ChempropMultitargetModel(targets=["a"], atom_feature_width=3)
+    with pytest.raises(ValueError, match="arrays"):
+        model.fit(
+            ["CCO", "CCN"],
+            np.array([[1.0], [2.0]]),
+            smiles_val=["CCF"],
+            y_val=np.array([[1.0]]),
+            atom_features_path=npz_path,
+        )
+
+
+def test_atom_features_path_width_is_checked(tmp_path) -> None:
+    pytest.importorskip("chemprop")
+    from cyp import graph_models
+
+    npz_path = tmp_path / "atom_feats.npz"
+    # Right compound count, wrong column width (2 instead of the model's 3).
+    np.savez(npz_path, np.zeros((2, 2)), np.zeros((2, 2)), np.zeros((2, 2)))
+    model = graph_models.ChempropMultitargetModel(targets=["a"], atom_feature_width=3)
+    with pytest.raises(ValueError, match="shaped"):
+        model.fit(
+            ["CCO", "CCN"],
+            np.array([[1.0], [2.0]]),
+            smiles_val=["CCF"],
+            y_val=np.array([[1.0]]),
+            atom_features_path=npz_path,
+        )
+
+
+def test_atom_features_end_to_end_fit_and_predict(tmp_path) -> None:
+    """A real (tiny) fit and predict through the single-combined-file /
+    `--splits-file` path, to prove `--atom-features-path` actually reaches
+    chemprop and the encoder's message-passing width agrees between train and
+    predict -- pinned after this repo's own discovery (notebook 11, 2026-09-19)
+    that the two-separate-files pattern silently cannot carry a molecule-specific
+    atom array at all, only after paying for an hour of upstream computation
+    first. This is the regression test for that."""
+    pytest.importorskip("chemprop")
+    from rdkit import Chem
+
+    from cyp import graph_models
+
+    smiles_train = [
+        "CCO",
+        "CCN",
+        "CCC",
+        "c1ccccc1",
+        "CN1CCC[C@H]1c1cccnc1",
+        "CCOCC",
+        "CC(C)O",
+        "CCCCO",
+        "CCCl",
+        "CCBr",
+        "CCF",
+        "CCI",
+        "COC",
+        "CCCN",
+        "c1ccncc1",
+    ]
+    smiles_val = ["CC(N)C(=O)O", "CCN(CC)CC", "c1ccc2ccccc2c1"]
+    y_train = np.linspace(3.0, 6.0, len(smiles_train)).reshape(-1, 1)
+    y_val = np.array([[4.2], [4.8], [5.1]])
+
+    rng = np.random.default_rng(0)
+
+    def make_npz(smis, path):
+        arrs = [
+            rng.random((Chem.MolFromSmiles(s).GetNumAtoms(), 3)).astype(np.float32) for s in smis
+        ]
+        np.savez(path, *arrs)
+
+    train_npz = tmp_path / "combined.npz"
+    make_npz(smiles_train + smiles_val, train_npz)
+
+    model = graph_models.ChempropMultitargetModel(
+        targets=["target"],
+        atom_feature_width=3,
+        model_dir=tmp_path / "model",
+        epochs=5,
+    )
+    model.fit(
+        smiles_train,
+        y_train,
+        smiles_val=smiles_val,
+        y_val=y_val,
+        atom_features_path=train_npz,
+    )
+
+    test_npz = tmp_path / "test.npz"
+    make_npz(smiles_val, test_npz)
+    preds = model.predict(smiles_val, atom_features_path=test_npz)
+    assert preds.shape == (len(smiles_val), 1)
+    assert np.isfinite(preds).all()
+
+    with pytest.raises(ValueError, match="atom_feature_width"):
+        model.predict(smiles_val)

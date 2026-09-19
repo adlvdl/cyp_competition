@@ -60,6 +60,21 @@ deep = [
     "tabpfn>=2.0",
     "tabicl>=2.0",
 ]
+# Structure-based arms for notebooks/11_docking_3d.py. Separate from `deep` because
+# they need an external binary that is not a Python dependency at all: smina, from
+# `brew install brewsci/bio/smina`. gnina was the first choice and cannot be used --
+# it is CUDA-only (the sole v1.3.3 asset is a 1.96 GB CUDA-12.8 Linux binary) and this
+# is an arm64 Mac. See src/cyp/docking.py.
+structure = [
+    # Protein-ligand interaction fingerprints from docked poses. Pure Python over
+    # RDKit + MDAnalysis, so no new binary; preferred over PLIP (report-oriented
+    # output needing parsing) and ODDT (unreleased since 2021, OpenBabel bindings).
+    "prolif>=2.2",
+    "mdanalysis>=2.7",
+    # Uni-Mol 3D representation. Torch-based, so every call runs in a subprocess --
+    # see src/cyp/unimol.py for the two independent reasons.
+    "unimol_tools>=0.1.6",
+]
 dev = [
     "pytest>=8.2",
     "ruff>=0.6",

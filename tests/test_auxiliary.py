@@ -684,3 +684,162 @@ def test_run_cv_pretrained_threads_descriptors_to_fit_and_predict(monkeypatch, t
     for call in calls:
         assert call["descriptors"] is not None
         assert call["descriptors"].shape == (call["n_smiles"], 1)
+
+
+def test_pretrain_descriptors_from_smiles_false_skips_pharmacophore_computation(
+    monkeypatch, tmp_path
+):
+    """`pretrain_descriptors_from_smiles=False` must zero-pad rather than call
+    `pharmacophore.descriptors()` on the pretraining corpus -- the real regression
+    this guards against: notebook 11 (2026-09-19) crashed with `ColumnNotFoundError`
+    computing pharmacophore descriptors for a docking-derived `descriptor_columns`
+    that does not exist on public compounds, after paying for an hour of RDKit
+    computation on the full corpus first. This test would have caught it before any
+    computation ran."""
+    from cyp import cv, graph_models, pharmacophore
+
+    frames = {
+        "e1": pl.DataFrame(
+            {
+                "Molecule_Name": [f"m{i}" for i in range(8)],
+                "SMILES": [
+                    "CCO",
+                    "CCN",
+                    "CCC",
+                    "c1ccccc1",
+                    "CCOCC",
+                    "CC(C)O",
+                    "CCCN",
+                    "c1ccncc1",
+                ],
+                "y_true": [5.0 + 0.1 * i for i in range(8)],
+                "y_lower": [4.8 + 0.1 * i for i in range(8)],
+                "y_upper": [5.2 + 0.1 * i for i in range(8)],
+            }
+        )
+    }
+    _, table = cv.shared_scaffold_folds(frames, n_outer=1, n_inner=2)
+    finetune_descriptors = pl.DataFrame(
+        {"Molecule_Name": [f"m{i}" for i in range(8)], "plif_0": [float(i % 2) for i in range(8)]}
+    )
+    pretraining = pl.DataFrame({"smiles_std": ["CCF", "CCBr", "CCI"], "e1": [None, None, None]})
+
+    class _StubModel:
+        def __init__(self, targets, pretrain_dir=None, descriptor_columns=None, **kwargs):
+            self.targets = list(targets)
+            self.descriptor_columns = descriptor_columns
+
+        def fit(self, smiles, y, descriptors=None, **kwargs):
+            return self
+
+        def predict(self, smiles, return_uncertainty=False, descriptors=None):
+            return np.zeros((len(smiles), len(self.targets)))
+
+        def pretrain_wide(self, *args, descriptors_train=None, descriptors_val=None, **kwargs):
+            # The property under test: whatever `run_cv_pretrained` decided the
+            # pretrain-side descriptors should be must have arrived here as an
+            # all-zero block of the right width, not None and not a real value.
+            assert descriptors_train is not None
+            assert descriptors_val is not None
+            assert (descriptors_train == 0).all()
+            assert (descriptors_val == 0).all()
+            return self
+
+    called = {"pharmacophore": False}
+
+    def _fail_if_called(*args, **kwargs):
+        called["pharmacophore"] = True
+        raise AssertionError(
+            "pharmacophore.descriptors must not run when pretrain_descriptors_from_smiles=False"
+        )
+
+    monkeypatch.setattr(graph_models, "ChempropMultitargetModel", _StubModel)
+    monkeypatch.setattr(pharmacophore, "descriptors", _fail_if_called)
+    monkeypatch.setattr(aux_training.C, "PROJECT_ROOT", tmp_path)
+
+    oof = aux_training.run_cv_pretrained(
+        frames,
+        pretraining,
+        method_name="zero_pad",
+        assignments=table,
+        folds=[1],
+        finetune_descriptors=finetune_descriptors,
+        descriptor_columns=["plif_0"],
+        pretrain_descriptors_from_smiles=False,
+    )
+
+    assert not called["pharmacophore"]
+    assert oof.height > 0
+
+
+def test_pretrain_descriptors_from_smiles_true_still_computes_pharmacophore(monkeypatch, tmp_path):
+    """The default (`True`) must be unchanged from before `pretrain_descriptors_
+    from_smiles` existed -- a real SMILES-derived descriptor (09's use case) still
+    needs `pharmacophore.descriptors()` on the pretraining corpus, or the FFN width
+    silently stops matching what the fine-tuning stage actually needs."""
+    from cyp import cv, graph_models, pharmacophore
+
+    frames = {
+        "e1": pl.DataFrame(
+            {
+                "Molecule_Name": [f"m{i}" for i in range(8)],
+                "SMILES": [
+                    "CCO",
+                    "CCN",
+                    "CCC",
+                    "c1ccccc1",
+                    "CCOCC",
+                    "CC(C)O",
+                    "CCCN",
+                    "c1ccncc1",
+                ],
+                "y_true": [5.0 + 0.1 * i for i in range(8)],
+                "y_lower": [4.8 + 0.1 * i for i in range(8)],
+                "y_upper": [5.2 + 0.1 * i for i in range(8)],
+            }
+        )
+    }
+    _, table = cv.shared_scaffold_folds(frames, n_outer=1, n_inner=2)
+    finetune_descriptors = pl.DataFrame(
+        {
+            "Molecule_Name": [f"m{i}" for i in range(8)],
+            "n_basic_nitrogen": [0.0] * 8,
+        }
+    )
+    pretraining = pl.DataFrame({"smiles_std": ["CCF", "CCBr", "CCI"], "e1": [None, None, None]})
+
+    class _StubModel:
+        def __init__(self, targets, pretrain_dir=None, descriptor_columns=None, **kwargs):
+            self.targets = list(targets)
+
+        def fit(self, smiles, y, descriptors=None, **kwargs):
+            return self
+
+        def predict(self, smiles, return_uncertainty=False, descriptors=None):
+            return np.zeros((len(smiles), len(self.targets)))
+
+        def pretrain_wide(self, *args, **kwargs):
+            return self
+
+    calls = {"n": 0}
+    real_descriptors = pharmacophore.descriptors
+
+    def _spy(*args, **kwargs):
+        calls["n"] += 1
+        return real_descriptors(*args, **kwargs)
+
+    monkeypatch.setattr(graph_models, "ChempropMultitargetModel", _StubModel)
+    monkeypatch.setattr(pharmacophore, "descriptors", _spy)
+    monkeypatch.setattr(aux_training.C, "PROJECT_ROOT", tmp_path)
+
+    aux_training.run_cv_pretrained(
+        frames,
+        pretraining,
+        method_name="real_descriptors",
+        assignments=table,
+        folds=[1],
+        finetune_descriptors=finetune_descriptors,
+        descriptor_columns=["n_basic_nitrogen"],
+    )
+
+    assert calls["n"] == 2  # once for pre_fit, once for pre_val

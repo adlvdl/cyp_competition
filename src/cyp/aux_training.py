@@ -616,6 +616,7 @@ def run_cv_pretrained(
     uncertainty: bool = False,
     finetune_descriptors: pl.DataFrame | None = None,
     descriptor_timeout_s: float | None = None,
+    pretrain_descriptors_from_smiles: bool = True,
     **chemprop_kwargs,
 ) -> pl.DataFrame:
     """A3 -- pretrain the encoder on public PubChem data, then fine-tune per fold.
@@ -672,14 +673,26 @@ def run_cv_pretrained(
             `graph_models.ChempropModel.predict`. `y_unc` is always a variance.
         finetune_descriptors: Molecule-level extra features for the *fine-tuning*
             stage only -- keyed on ``Molecule_Name``, one column per name in
-            `chemprop_kwargs["descriptor_columns"]`. Not used for pretraining: the
-            pretraining corpus is public data with no pharmacophore descriptors
-            precomputed, and the geometry hypothesis this exists to test
-            (notebook 09) is about the challenge-scale fine-tuning signal, not the
-            encoder's warm start. Every fine-tuning compound (train, val and test in
-            every fold) must have a row here when `descriptor_columns` is set, or the
-            join below silently drops it and `ChempropMultitargetModel` raises on the
-            resulting shape mismatch rather than training on a partial table.
+            `chemprop_kwargs["descriptor_columns"]`. Every fine-tuning compound
+            (train, val and test in every fold) must have a row here when
+            `descriptor_columns` is set, or the join below silently drops it and
+            `ChempropMultitargetModel` raises on the resulting shape mismatch rather
+            than training on a partial table.
+
+            What the pretraining stage does with these columns depends on
+            `pretrain_descriptors_from_smiles` -- by default it computes real
+            `pharmacophore.descriptors()` on the pretraining corpus (09's original
+            behaviour, valid only when `descriptor_columns` names something
+            computable from a bare SMILES string). Pass
+            `pretrain_descriptors_from_smiles=False` for a descriptor that is not
+            SMILES-derived (PLIF bits, a docking score) -- the pretraining stage
+            then gets an all-zero block of the right width instead, purely to keep
+            the FFN's input size loadable across the `--checkpoint` warm-start
+            (`ChempropMultitargetModel.pretrain_wide`'s docstring explains why the
+            width has to match exactly). Confirmed necessary directly: notebook 11
+            crashed with `ColumnNotFoundError` computing `pharmacophore.descriptors`
+            on the pretraining corpus for a `docking_score`/PLIF descriptor that
+            does not exist there, after paying for the whole computation first.
         descriptor_timeout_s: Wall-clock bound per molecule for the pretraining
             corpus's descriptor computation below (only reached when
             `descriptor_columns` is set). Public-library molecules average larger
@@ -690,6 +703,18 @@ def run_cv_pretrained(
             matrices are themselves cached to `pretrain_dir` (one `.npy` per
             fit/val split, keyed on row count), so a crash after this step but
             before the pretrain checkpoint is written does not repeat it on rerun.
+            Ignored when `pretrain_descriptors_from_smiles=False`.
+        pretrain_descriptors_from_smiles: Whether the pretraining-stage descriptor
+            block (present only when `descriptor_columns` is set) is computed by
+            `pharmacophore.descriptors()` on the pretraining corpus's own SMILES
+            (`True`, the original behaviour, correct only when `descriptor_columns`
+            names something SMILES-derived) or filled with zeros of the right width
+            (`False`, for a descriptor that only exists on the fine-tuning
+            compounds -- a docked-pose or protein-contact feature the public
+            pretraining corpus was never measured for). Zero-padding costs nothing
+            beyond `np.zeros` and carries no information into pretraining by
+            construction; it exists purely so `--checkpoint` sees the same FFN
+            input width at both stages.
         **chemprop_kwargs: Forwarded to `ChempropMultitargetModel`.
 
     Returns:
@@ -788,7 +813,16 @@ def run_cv_pretrained(
         pre_val, pre_fit = pretraining[order[:n_val]], pretraining[order[n_val:]]
 
         pre_fit_descriptors = pre_val_descriptors = None
-        if descriptor_columns:
+        if descriptor_columns and not pretrain_descriptors_from_smiles:
+            # Zero-padded, not computed: `descriptor_columns` names something that
+            # only exists on the fine-tuning compounds (a docked-pose or
+            # protein-contact feature), so there is nothing genuine to compute here
+            # -- see the `pretrain_descriptors_from_smiles` docstring entry above.
+            # The block exists purely to keep the FFN's input width loadable across
+            # `--checkpoint`; it is never read for its values.
+            pre_fit_descriptors = np.zeros((pre_fit.height, len(descriptor_columns)))
+            pre_val_descriptors = np.zeros((pre_val.height, len(descriptor_columns)))
+        elif descriptor_columns:
             # The pretraining corpus has no pharmacophore descriptors of its own --
             # they are computed here, once, purely so the pretrain checkpoint's FFN
             # has the same input width the fine-tuning model will need. See

@@ -1,0 +1,5 @@
+endpoint,comparison,diff,ci_low,ci_high,p
+CYP2D6,unimol_docked - unimol_etkdg,0.0194,0.0026,0.0356,0.0246
+CYP2D6,plif - ecfp,-0.0196,-0.0297,-0.0097,0.0004
+CYP2D6,docking_score - ecfp,-0.015,-0.0247,-0.0052,0.0038
+CYP2D6,unimol_etkdg - ecfp,-0.016,-0.0398,0.0075,0.1876
