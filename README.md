@@ -134,6 +134,24 @@ Only CYP3A4 clears the mean predictor by a wide margin before calibration; the o
 
 **Which differences are real, on the metric that decides rank?** The competition ranks on the **macro-average across all four endpoints** (the leaderboard backend's "MA" pseudo-endpoint — see CLAUDE.md), not on any single CYP. [mcs_heatmap_regression_macro.png](experiments/01_baseline/mcs_heatmap_regression_macro.png) and [mcs_heatmap_tdi_macro.png](experiments/01_baseline/mcs_heatmap_tdi_macro.png) run the same Tukey HSD on that macro-averaged metric, via `evaluation.macro_averaged_fold_metrics`. On this run: `lgbm` and `xgb` are **not significantly different** on macro-averaged ST-RAE (p=0.239) despite both clearly beating `mean`/`ridge`/`knn` — this is the number that should actually decide a submission, not the per-endpoint panels above.
 
+## Running notebook 11 (docking / Uni-Mol)
+
+[notebooks/11_docking_3d.py](notebooks/11_docking_3d.py) is the only code needing `unimol_tools`, and **it is not installed by `make setup`**. It pins `numpy<2.3.0`, and numpy 2.2.x makes TabICL return all-NaN probabilities on a ~2,400-row classification fit while raising nothing — which silently scores the whole TDI track at MCC 0.000. `pyproject.toml` therefore pins `numpy>=2.4` and leaves `unimol_tools` out of every extra; `uv sync` fails outright if both are requested.
+
+Uni-Mol already runs in a child process, so it does not have to be the same interpreter. Point `CYP_UNIMOL_PYTHON` at a throwaway environment:
+
+```bash
+uv venv /tmp/unimol                                    # separate env, older numpy
+VIRTUAL_ENV=/tmp/unimol uv pip install unimol_tools
+CYP_UNIMOL_PYTHON=/tmp/unimol/bin/python uv run python notebooks/11_docking_3d.py
+```
+
+Unset, the notebook still reruns as committed: its CYP2D6 Uni-Mol embeddings are cached under [experiments/11_docking_3d/cache/](experiments/11_docking_3d/cache/), and the cached branch never starts a child. Only a *new* isoform, or a cleared cache, actually calls Uni-Mol — and that raises rather than skipping, so set the variable first if you are extending the run. Everything else in notebook 11 (smina docking, ProLIF interaction fingerprints) needs no extra environment.
+
+`unimol.available()` reports whether the child interpreter can import the package, and is the check to use before adding a new Uni-Mol arm.
+
+The docking itself also needs `smina` (`brew install brewsci/bio/smina`); gnina is CUDA-only and cannot run on an arm64 Mac. Budget generously — docking CYP2D6 alone took 15.6h here, with per-chunk times varying 30x under ordinary desktop contention.
+
 ## Validating a split
 
 The test set is an **analog expansion**: 75 primary hits, each with ~10 close analogs. A random split leaks near-duplicates across folds and produces validation scores that will not track the leaderboard. Use `cv.scaffold_splits` by default; `cv.random_splits` is there as a deliberately optimistic baseline for comparison.

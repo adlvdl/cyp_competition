@@ -37,6 +37,25 @@ Two independent reasons, either sufficient:
 
 The second failure looks like the first but is distinguishable by CPU: the OpenMP
 deadlock sits at 0% in `kmp_flag_64::wait`, this one runs hot.
+
+## `unimol_tools` is not installed by default -- set `CYP_UNIMOL_PYTHON`
+
+`unimol_tools` pins ``numpy<2.3.0``, and numpy 2.2.x makes TabICL return all-NaN
+probabilities on a ~2,400-row classification fit while raising nothing, which
+silently zeroes the whole TDI track (see CLAUDE.md's environment-traps section, and
+`pyproject.toml`'s ``numpy>=2.4``). The two cannot share one environment, so
+`unimol_tools` is deliberately absent from every extra.
+
+Because the child process is already separate, it does not have to be *this*
+interpreter. Set ``CYP_UNIMOL_PYTHON`` to a Python that has `unimol_tools`
+installed and both entry points work unchanged:
+
+    uv venv /tmp/unimol
+    VIRTUAL_ENV=/tmp/unimol uv pip install unimol_tools
+    CYP_UNIMOL_PYTHON=/tmp/unimol/bin/python uv run python notebooks/11_docking_3d.py
+
+Unset, it falls back to `sys.executable`, where the import simply fails -- so
+`available()` returns False rather than the call dying mid-notebook.
 """
 
 from __future__ import annotations
@@ -90,11 +109,22 @@ if __name__ == "__main__":
 """
 
 
+def _python() -> str:
+    """Interpreter for the Uni-Mol child.
+
+    `CYP_UNIMOL_PYTHON` when set, else this process's own. See the module docstring:
+    `unimol_tools` cannot be installed alongside the numpy this repo needs, so the
+    only supported way to run it is a separate environment pointed at by that
+    variable.
+    """
+    return os.environ.get("CYP_UNIMOL_PYTHON") or sys.executable
+
+
 def _run_child(payload: dict, tmp: Path) -> np.ndarray:
     script = tmp / "unimol_embed.py"
     script.write_text(_UNIMOL_SCRIPT)
     result = subprocess.run(
-        [sys.executable, str(script), json.dumps(payload)],
+        [_python(), str(script), json.dumps(payload)],
         capture_output=True,
         text=True,
         env=os.environ.copy(),
@@ -189,10 +219,23 @@ def align(embeddings: np.ndarray, embedded_names: list[str], names: list[str]) -
 
 
 def available() -> bool:
-    """Whether `unimol_tools` can be imported in a child process."""
-    result = subprocess.run(
-        [sys.executable, "-c", "import unimol_tools"],
-        capture_output=True,
-        text=True,
-    )
+    """Whether `unimol_tools` can be imported in the child interpreter (`_python`)."""
+    try:
+        result = subprocess.run(
+            # `import unimol_tools` alone is not a sufficient probe: uninstalling
+            # leaves a `unimol_tools/` directory behind holding downloaded model
+            # weights, and Python imports that empty shell as a *namespace package*
+            # with `__file__ = None`. The import succeeds, `available()` returns
+            # True, and the arm then dies on the first real attribute access.
+            # Requiring `__file__` distinguishes a real package from the leftovers.
+            [_python(), "-c", "import unimol_tools; assert unimol_tools.__file__"],
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        # A `CYP_UNIMOL_PYTHON` pointing at a path that does not exist is the most
+        # likely way this is misconfigured, and a probe named `available` must answer
+        # False rather than raise -- callers use it to decide whether to run the arm
+        # at all, so raising here turns a skippable arm into a dead notebook.
+        return False
     return result.returncode == 0
