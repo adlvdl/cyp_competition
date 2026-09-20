@@ -43,7 +43,7 @@ import polars as pl
 from . import auxiliary
 from . import constants as C
 from .cv import fold_assignment_splits, report_fold, shared_scaffold_folds
-from .multitask import _oof_records, endpoint_indicator_frame
+from .multitask import _oof_records, _oof_records_classification, endpoint_indicator_frame
 
 
 def _wide_frame(frames: dict[str, pl.DataFrame]) -> pl.DataFrame:
@@ -1285,3 +1285,233 @@ def _split_validation_weighted(
     n_val = max(1, int(p_val * train_wide.height))
     fit_index, val_index = order[n_val:], order[:n_val]
     return train_wide[fit_index], train_wide[val_index], weights[fit_index]
+
+
+def run_cv_pretrained_classification(
+    frames: dict[str, pl.DataFrame],
+    pretraining: pl.DataFrame,
+    method_name: str = "chemprop_pubchem_pretrained_tdi",
+    pretrain_targets: list[str] | None = None,
+    freeze_encoder: bool = False,
+    pretrain_epochs: int = 30,
+    n_outer: int = 5,
+    n_inner: int = 5,
+    seed: int = 42,
+    p_val: float = 0.1,
+    threshold: float = 0.5,
+    assignments: pl.DataFrame | None = None,
+    folds: list[int] | None = None,
+    on_fold=None,
+    **chemprop_kwargs,
+) -> pl.DataFrame:
+    """`run_cv_pretrained`'s TDI sibling: pretrain on public pIC50, fine-tune on labels.
+
+    The regression runner cannot be reused, for the reasons `multitask.py` already
+    documents for its own pair: `_oof_records` casts ``y_true`` to float and carries
+    ``y_lower``/``y_upper`` a boolean label does not have, and the OOF schema a
+    threshold sweep needs (``y_prob`` alongside ``y_pred``) is different. This mirrors
+    the regression function's structure step for step so the two stay comparable.
+
+    ## Both stages must be classification, and the head counts must match
+
+    Two hard constraints, both found by direct probe rather than inference, and both
+    silent failures if violated:
+
+    1. **A regression checkpoint cannot warm-start a classification fine-tune.**
+       chemprop's `load_and_use_pretrained_model_scalers` applies the checkpoint's
+       ``UnscaleTransform`` to the new targets unconditionally whenever
+       ``--checkpoint`` is passed (`chemprop/cli/train.py`), with no flag to skip it.
+       With mismatched head counts it raises (``operands could not be broadcast
+       together with shapes (250,2) (1,3)``). With *matching* head counts it is far
+       worse: training completes, and `predict` returns values in the pIC50 range
+       (measured: 3.40-4.70) instead of probabilities in [0, 1] -- a regression
+       scaler silently unscaling a sigmoid output. Nothing raises, and the resulting
+       MCC reads as a model that learned nothing.
+
+       So the pretraining corpus is **binarised** and pretrained as classification,
+       which leaves no ``UnscaleTransform`` on the checkpoint at all. The public
+       panel has no TDI label anywhere -- no public assay runs a preincubation arm at
+       this scale -- so what the encoder learns is CYP binding chemistry in general,
+       which is exactly the transfer `05` measured as the largest lever in this repo
+       on the regression track, and which CLAUDE.md records as never having been
+       tried on TDI.
+
+    2. **The two stages need the same number of heads**, for the same scaler reason,
+       so `pretrain_targets` must be as long as `frames`. This is checked up front
+       rather than left to fail hours into a run.
+
+    Args:
+        frames: TDI endpoint name (``{ISO}_is_TDI``) -> training frame, each carrying
+            ``Molecule_Name``, ``SMILES`` and a boolean ``y_true`` column -- the same
+            shape `multitask.run_cv_singletask_classification` takes, so the treatment
+            and its control are fed identically.
+        pretraining: Wide frame with ``smiles_std`` and one **binary** column per
+            pretraining head -- see `binarise_pretraining_matrix`, which converts a
+            `public_pretraining_matrix` pIC50 panel into the shape this needs.
+        pretrain_targets: Columns of `pretraining` to pretrain on. Defaults to every
+            non-SMILES column. Must be the same length as `frames` (see constraint 2
+            above); a mismatch raises here rather than after the pretrain.
+        threshold: Decision threshold written into ``y_pred``. The OOF frame carries
+            ``y_prob``, so a sweep reproduces any other threshold without refitting --
+            and `04` found the threshold matters more than the model, with every
+            optimum in 0.10-0.25 rather than at 0.5. Leave this at 0.5 and tune on
+            the returned probabilities.
+        freeze_encoder: Lock the message-passing weights during fine-tuning. `05`
+            found freezing significantly *worse* on regression; it is exposed here so
+            the same question can be asked rather than assumed.
+
+    Returns:
+        Classification OOF frame with ``y_true``, ``y_pred`` and ``y_prob``, matching
+        `models.run_cv_classification`'s schema.
+    """
+    from .graph_models import ChempropMultitargetModel
+
+    endpoints = list(frames)
+    if pretrain_targets is None:
+        pretrain_targets = [c for c in pretraining.columns if c != "smiles_std"]
+    if len(pretrain_targets) != len(endpoints):
+        # Checked before anything expensive -- before the fold assignment and long
+        # before the pretrain -- because the scaler that breaks on a head-count
+        # mismatch is only loaded at fine-tune time, hours later.
+        raise ValueError(
+            f"pretrain_targets has {len(pretrain_targets)} heads but there are "
+            f"{len(endpoints)} fine-tuning endpoints; chemprop's checkpoint scaler "
+            "requires them to match (see this function's docstring)"
+        )
+
+    if assignments is None:
+        _, assignments = shared_scaffold_folds(frames, n_outer=n_outer, n_inner=n_inner, seed=seed)
+
+    # One wide frame over the union of TDI-labelled compounds, built exactly as
+    # `multitask.run_cv_multitarget_classification` builds its own: each frame carries
+    # its label in `y_true`, booleans go in as 0.0/1.0 because chemprop's CSV reader
+    # takes a numeric class label, and an unmeasured cell stays **null** rather than
+    # 0.0 -- a 0.0 would read as a real measurement of "not a time-dependent
+    # inhibitor". Only 259 of the 4,821 labelled compounds carry both TDI labels, so
+    # dropping incomplete rows is not an option either.
+    wide = None
+    for endpoint in endpoints:
+        block = frames[endpoint].select(
+            "Molecule_Name", "SMILES", pl.col("y_true").cast(pl.Float64).alias(endpoint)
+        )
+        wide = (
+            block
+            if wide is None
+            else wide.join(block, on=["Molecule_Name", "SMILES"], how="full", coalesce=True)
+        )
+    wide = wide.sort("Molecule_Name")
+
+
+    stacked, _ = endpoint_indicator_frame(frames)
+    n_folds = assignments["fold"].n_unique()
+
+    # A dedicated pretrain directory per method, for the same reason the regression
+    # runner uses one: an unpretrained control arm in the same session must not be
+    # able to warm-start from this checkpoint by accident.
+    pretrain_dir = C.PROJECT_ROOT / ".chemprop_pretrain" / method_name
+    if not (pretrain_dir / "model_0" / "best.pt").exists():
+        # `pred_type="classification"`, not regression, and this is the whole
+        # constraint from the docstring: a regression pretrain leaves an
+        # `UnscaleTransform` on the checkpoint that chemprop then applies to the
+        # fine-tuned classifier's output, silently turning probabilities into
+        # pIC50-range values (measured: a "probability" of -0.525). The pretraining
+        # matrix must already be binary -- `binarise_pretraining_matrix`.
+        pretrainer = ChempropMultitargetModel(
+            targets=pretrain_targets,
+            pretrain_dir=pretrain_dir,
+            pretrain_epochs=pretrain_epochs,
+            pred_type="classification",
+            **chemprop_kwargs,
+        )
+        rng = np.random.default_rng(seed)
+        order = rng.permutation(pretraining.height)
+        n_val = max(1, int(p_val * pretraining.height))
+        pre_val, pre_fit = pretraining[order[:n_val]], pretraining[order[n_val:]]
+        pretrainer.pretrain_wide(
+            pre_fit["smiles_std"].to_list(),
+            pre_fit.select(pretrain_targets).to_numpy(),
+            pre_val["smiles_std"].to_list(),
+            pre_val.select(pretrain_targets).to_numpy(),
+        )
+
+    records: list[dict] = []
+    for fold, outer, inner, train_long, _val, test_long in fold_assignment_splits(
+        stacked, assignments
+    ):
+        if folds is not None and fold not in folds:
+            continue
+
+        train_names = set(train_long["Molecule_Name"].to_list())
+        train_wide = wide.filter(pl.col("Molecule_Name").is_in(train_names))
+        fit_wide, val_wide = _split_validation(train_wide, seed, fold, p_val)
+
+        model = ChempropMultitargetModel(
+            targets=endpoints,
+            pretrain_dir=pretrain_dir,
+            freeze_encoder=freeze_encoder,
+            pred_type="classification",
+            **chemprop_kwargs,
+        )
+        model.fit(
+            fit_wide["SMILES"].to_list(),
+            fit_wide.select(endpoints).to_numpy(),
+            smiles_val=val_wide["SMILES"].to_list(),
+            y_val=val_wide.select(endpoints).to_numpy(),
+        )
+
+        test_names = set(test_long["Molecule_Name"].to_list())
+        test_wide = wide.filter(pl.col("Molecule_Name").is_in(test_names)).sort("Molecule_Name")
+        probabilities = model.predict(test_wide["SMILES"].to_list())
+        y_prob = _predictions_for(test_long, test_wide, probabilities, endpoints)
+        records.extend(
+            _oof_records_classification(
+                test_long, y_prob, method_name, fold, outer, inner, threshold
+            )
+        )
+        report_fold(on_fold, fold, n_folds)
+
+    return pl.DataFrame(records)
+
+
+def binarise_pretraining_matrix(
+    pretraining: pl.DataFrame,
+    threshold: float = 5.0,
+    columns: list[str] | None = None,
+) -> pl.DataFrame:
+    """Convert a pIC50 pretraining panel into the binary form a TDI warm-start needs.
+
+    `run_cv_pretrained_classification`'s docstring explains why this is mandatory
+    rather than stylistic: a regression checkpoint silently corrupts a classification
+    fine-tune's output scale, and the only way to avoid carrying an
+    ``UnscaleTransform`` on the checkpoint is for the pretraining stage to be a
+    classification task too.
+
+    The label is "active at this isoform", `pIC50 >= threshold`. **Nulls stay null**
+    -- an untested compound is not an inactive one, and writing 0.0 here would teach
+    the encoder that every compound a public panel never ran is a confirmed negative,
+    which is the same mistake `multitask.run_cv_multitarget` documents for unmeasured
+    regression cells.
+
+    The default threshold of 5.0 (10 uM) is the usual screening activity cut and sits
+    near the middle of the public panel's range, so both classes are well populated.
+    The exact value matters less than it might: the encoder is being taught to
+    separate binders from non-binders, and the fine-tuning stage never sees this head.
+
+    Args:
+        pretraining: Wide frame with ``smiles_std`` and pIC50 columns.
+        threshold: pIC50 at or above which a compound counts as active.
+        columns: Columns to binarise. Defaults to every non-``smiles_std`` column.
+
+    Returns:
+        The same frame with those columns replaced by 1.0/0.0/null.
+    """
+    columns = columns or [c for c in pretraining.columns if c != "smiles_std"]
+    return pretraining.with_columns(
+        [
+            pl.when(pl.col(c).is_null())
+            .then(None)
+            .otherwise((pl.col(c) >= threshold).cast(pl.Float64))
+            .alias(c)
+            for c in columns
+        ]
+    )

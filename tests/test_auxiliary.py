@@ -24,7 +24,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-from cyp import aux_training, auxiliary
+from cyp import aux_training, auxiliary, graph_models
 from cyp import constants as C
 
 
@@ -843,3 +843,96 @@ def test_pretrain_descriptors_from_smiles_true_still_computes_pharmacophore(monk
     )
 
     assert calls["n"] == 2  # once for pre_fit, once for pre_val
+
+
+def test_binarise_pretraining_matrix_keeps_nulls_null():
+    """An untested compound is not a confirmed inactive.
+
+    Writing 0.0 for a null would teach the pretraining encoder that every compound a
+    public panel never ran is a negative -- the same mistake `run_cv_multitarget`
+    documents for unmeasured regression cells, and invisible once training starts.
+    """
+    frame = pl.DataFrame(
+        {"smiles_std": ["C", "CC", "CCC"], "a": [4.0, 6.0, None], "b": [5.0, None, 3.0]}
+    )
+    out = aux_training.binarise_pretraining_matrix(frame, threshold=5.0)
+
+    assert out["a"].to_list() == [0.0, 1.0, None]
+    # The threshold is inclusive: exactly 5.0 is active.
+    assert out["b"].to_list() == [1.0, None, 0.0]
+    assert out["smiles_std"].to_list() == ["C", "CC", "CCC"]
+
+
+def test_pretrained_classification_rejects_head_count_mismatch():
+    """Pin the guard that makes chemprop's scaler constraint fail fast.
+
+    A regression/classification head-count mismatch surfaces inside chemprop as
+    ``operands could not be broadcast together``, and only at fine-tune time -- after
+    the pretrain, which measured ~40 minutes on the PubChem corpus. Worse, when the
+    counts *do* match but the pretrain was a regression task, nothing raises at all
+    and `predict` returns pIC50-range values instead of probabilities. The guard is
+    the cheap half of that problem; `binarise_pretraining_matrix` is the other half.
+    """
+    frames = {
+        "CYP3A4_is_TDI": pl.DataFrame(
+            {"Molecule_Name": ["a"], "SMILES": ["C"], "CYP3A4_is_TDI": [True]}
+        ),
+        "CYP2D6_is_TDI": pl.DataFrame(
+            {"Molecule_Name": ["a"], "SMILES": ["C"], "CYP2D6_is_TDI": [False]}
+        ),
+    }
+    # Three pretraining heads against two fine-tuning endpoints.
+    pretraining = pl.DataFrame({"smiles_std": ["CC"], "h1": [1.0], "h2": [0.0], "h3": [1.0]})
+
+    with pytest.raises(ValueError, match="3 heads but there are 2"):
+        aux_training.run_cv_pretrained_classification(frames, pretraining)
+
+
+def test_pretrained_classification_pretrains_as_classification(monkeypatch, tmp_path):
+    """The pretrain stage must be a classification task, not regression.
+
+    A regression pretrain leaves an ``UnscaleTransform`` on the checkpoint, which
+    chemprop's `load_and_use_pretrained_model_scalers` then applies to the fine-tuned
+    classifier's output. Nothing raises: training completes and `predict` returns
+    pIC50-range values instead of probabilities (measured during development: a
+    "probability" of -0.525, and a plausible-looking but meaningless MCC). This pins
+    the task type at construction so the bug cannot return silently.
+    """
+    seen: list[str] = []
+
+    class _StubModel:
+        def __init__(self, **kwargs):
+            seen.append(kwargs.get("pred_type"))
+            self.targets = kwargs.get("targets", [])
+
+        def pretrain_wide(self, *args, **kwargs):
+            # Make the checkpoint look present so the fold loop proceeds.
+            ckpt = tmp_path / ".chemprop_pretrain" / "probe" / "model_0"
+            ckpt.mkdir(parents=True, exist_ok=True)
+            (ckpt / "best.pt").write_bytes(b"")
+            return self
+
+        def fit(self, *args, **kwargs):
+            return self
+
+        def predict(self, smiles, **kwargs):
+            return np.full((len(smiles), len(self.targets)), 0.5)
+
+    monkeypatch.setattr(graph_models, "ChempropMultitargetModel", _StubModel)
+    monkeypatch.setattr(aux_training.C, "PROJECT_ROOT", tmp_path)
+
+    names = [f"m{i}" for i in range(12)]
+    smiles = ["C", "CC", "CCC", "CCCC", "c1ccccc1", "CCO"] * 2
+    frames = {
+        iso: pl.DataFrame({"Molecule_Name": names, "SMILES": smiles, "y_true": [True, False] * 6})
+        for iso in ("CYP3A4_is_TDI", "CYP2D6_is_TDI")
+    }
+    pretraining = pl.DataFrame({"smiles_std": smiles, "h1": [1.0, 0.0] * 6, "h2": [0.0, 1.0] * 6})
+
+    aux_training.run_cv_pretrained_classification(
+        frames, pretraining, method_name="probe", folds=[0]
+    )
+
+    assert seen, "no model was constructed"
+    # Every stage -- pretrain and fine-tune alike -- must be classification.
+    assert set(seen) == {"classification"}, seen
