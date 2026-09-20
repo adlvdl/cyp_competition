@@ -1,0 +1,3 @@
+candidate,vs,diff,ci_low,ci_high,p_raw,p_value,threshold,significant
+caruana,tabicl_singletask,0.0197,0.0113,0.0283,0.0,0.0,0.025,true
+uniform,tabicl_singletask,0.01,-0.0008,0.021,0.0726,0.0726,0.05,false

@@ -218,6 +218,33 @@ Every optimum at threshold 0.25, consistent with `04`. The incumbent reproduced 
 
 **Infrastructure added:** `aux_training.run_cv_pretrained_classification` (the classification sibling of `run_cv_pretrained`) and `binarise_pretraining_matrix`. Two silent failures found by probe and pinned by tests — see the numpy and chemprop-scaler entries in the environment-traps section.
 
+### 14_tdi_ensemble (2026-09-20) — the ensemble is the first thing to beat 04's incumbent
+
+`13` eliminated the last single-model hypothesis, leaving the ensemble. It wins, and it is the **first arm in either track to beat a shipped incumbent since `05`**. Trains nothing — reads `13`'s OOF.
+
+**Weights are fitted on four outer repeats and scored on the fifth, rotated.** Selecting weights and scoring them on the same predictions measures the selection, not the ensemble; with four candidates and a metric as flexible as MCC that optimism is not small. Every number below is out-of-sample with respect to the weights.
+
+| arm | CYP2D6 | CYP3A4 | macro | vs incumbent | Holm |
+|:--|--:|--:|--:|--:|:--|
+| **caruana** | 0.1356 | 0.3944 | **0.2650** | **+0.0197** | **sig** (CI [0.0113, 0.0283], p=0.0000) |
+| uniform | 0.1315 | 0.3823 | 0.2569 | +0.0100 | no (CI [−0.0008, 0.0210], p=0.073) |
+| tabicl_singletask (04) | 0.1192 | 0.3738 | 0.2465 | — | — |
+| chemprop_pubchem | 0.1162 | 0.3215 | 0.2188 | — | — |
+| chemprop_pubchem_frozen | 0.0780 | 0.3178 | 0.1979 | — | — |
+| chemprop_scratch | 0.0467 | 0.2421 | 0.1444 | — | — |
+
+**Selection is doing real work — the uniform control is what proves it.** A plain mean of the same four arms gains only +0.0100 and fails Holm, against Caruana's +0.0197 at p=0.0000. Without that control the win would have been unattributable between "averaging helps" and "the weights help". It is the weights.
+
+**Decorrelation is why this works here and would not have worked on regression.** `13`'s arms correlate at **r = 0.30–0.62** — three of the four are a different model family from the incumbent. `07`'s four regression arms correlate at **r ≈ 0.94**, four variants of one pretrained chemprop, where a blend has nothing to average away. **Check pairwise correlation before spending time on an ensemble**; it predicts the outcome better than the members' individual scores do.
+
+**The weights are stable, which is what makes this shippable.** Across all 10 held-out repeats: `tabicl` 0.49–0.61, `chemprop_pubchem` 0.20–0.27, `chemprop_pubchem_frozen` 0.12–0.23, `chemprop_scratch` 0.026–0.12. No swing that would suggest fitting fold noise. Note `chemprop_scratch` earns a consistently tiny but non-zero weight despite being the worst member by a wide margin (macro 0.1444) — Caruana keeps it as a decorrelated minority voice rather than dropping it.
+
+**CYP3A4 carries the win; CYP2D6 does not resolve.** Per endpoint, Holm-corrected: CYP3A4 +0.0206 (CI [0.0106, 0.0308], p=0.0000, significant); CYP2D6 +0.0165 (CI [−0.0004, 0.0338], p=0.056, **not** significant). Same direction, half the data. Do not claim an ensemble gain on CYP2D6.
+
+**It is worth shipping and it does not explain the gap.** Board macro MCC 0.2111 against the contender's 0.4025 is 0.19; this buys ~0.02 in CV. The ensemble was the last of four hypotheses and the only one that paid, so the remaining difference is something not yet identified — most likely their encoder corpus (a D-MPNN pretrained on ChEMBL/TDC/Polaris plus a Novartis-surrogate CYP panel, against our PubChem qHTS), which this repo cannot replicate.
+
+**Infrastructure:** `ensemble.caruana_selection` — forward selection with replacement, bagged. Chosen over `sweep_weights` because **MCC cannot be decomposed per row** (it comes from a confusion matrix over the whole set), so a coarse weight grid has no structure to exploit; Caruana only ever asks "does adding this candidate improve the score", which any metric can answer. Also safer than a continuous optimizer on correlated candidates, which can reallocate weight destructively between near-duplicates. Pinned by `tests/test_ensemble_selection.py`.
+
 ## Placement (07) — separable from ordering, and where the leaderboard gap is
 
 A contender scored macro ST-RAE **0.4378** against our 0.78 ([blog](https://supercowpowers.github.io/workbench/blogs/cyp_challenge/), [code](https://github.com/SuperCowPowers/workbench/tree/main/ml_pipelines/OpenADMET/cyp)). Most of the gap is not a better model. `src/cyp/placement.py` implements the part reproducible without spending submissions we do not have.

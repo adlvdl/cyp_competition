@@ -15,6 +15,8 @@ expect a sparse solution and do not assume every candidate belongs in the blend.
 
 from __future__ import annotations
 
+from collections import Counter
+from collections.abc import Callable
 from itertools import product
 
 import numpy as np
@@ -108,3 +110,89 @@ def catastrophic_rate(y_true: np.ndarray, y_pred: np.ndarray, threshold: float =
     ST-RAE when deciding whether a blend is worth its complexity.
     """
     return float(np.mean(np.abs(np.asarray(y_true) - np.asarray(y_pred)) > threshold))
+
+
+def caruana_selection(
+    predictions: dict[str, np.ndarray],
+    y_true: np.ndarray,
+    score: Callable[[np.ndarray, np.ndarray], float],
+    *,
+    maximize: bool = True,
+    n_bags: int = 20,
+    bag_frac: float = 0.5,
+    max_iter: int = 50,
+    seed: int = 42,
+) -> dict[str, float]:
+    """Caruana bagged ensemble selection (Caruana et al., ICML 2004).
+
+    Forward stepwise selection **with replacement**: each round adds whichever
+    candidate most improves the running average, and a strong candidate may be picked
+    repeatedly, which is how it earns more weight without a continuous optimizer.
+    Repeated over random subsets of the candidate library (bagging), with the final
+    weights proportional to how often each candidate was selected across bags.
+
+    Preferred over `sweep_weights` when the metric is not a mean of per-row errors.
+    **MCC is the case that forces it here**: it is computed from a confusion matrix
+    over the whole set, so it cannot be decomposed per row, and a weight grid scored
+    on it has no structure for a coarse sweep to exploit. Caruana only ever asks
+    "does adding this candidate improve the score", which any metric can answer.
+
+    Also preferred when candidates are correlated. A continuous optimizer (NNLS and
+    friends) can reallocate weight destructively between two near-duplicate models,
+    fitting noise in their difference; selection with replacement cannot, since it
+    only ever adds whole candidates.
+
+    Args:
+        predictions: Candidate name -> prediction vector, all the same length. For
+            classification these are probabilities, not labels.
+        y_true: Targets, aligned with every prediction vector.
+        score: `(y_true, y_pred) -> float`. Takes the *blended* prediction, so a
+            classification caller thresholds inside this function rather than passing
+            labels in (see notebook 13 for the MCC-at-fixed-threshold pattern).
+        maximize: True for a goodness metric (MCC, rho), False for an error metric.
+        n_bags: Bagging rounds. Weights are the selection counts across all bags.
+        bag_frac: Fraction of candidates visible in each bag.
+        max_iter: Selection rounds per bag.
+        seed: RNG seed for the bag subsets.
+
+    Returns:
+        Candidate name -> weight, summing to 1. Candidates never selected get 0.0,
+        so read the result as a sparse solution rather than assuming every model is
+        in the blend.
+    """
+    names = sorted(predictions)
+    if not names:
+        raise ValueError("no candidates to select from")
+    matrix = np.vstack([np.asarray(predictions[n], dtype=float) for n in names]).T
+    rng = np.random.default_rng(seed)
+    bag_size = max(1, int(round(bag_frac * len(names))))
+    counts = Counter()
+
+    for _ in range(n_bags):
+        subset = rng.choice(len(names), size=min(bag_size, len(names)), replace=False)
+        # Start from the single best candidate in this bag, as the paper does --
+        # starting from the full average makes the first step much harder to improve.
+        individual = [score(y_true, matrix[:, i]) for i in subset]
+        best_local = int(np.argmax(individual) if maximize else np.argmin(individual))
+        selected = [subset[best_local]]
+        running = matrix[:, selected[0]].copy()
+        current = score(y_true, running)
+
+        for _ in range(max_iter):
+            best_idx, best_score = None, current
+            for i in subset:
+                trial = (running * len(selected) + matrix[:, i]) / (len(selected) + 1)
+                s = score(y_true, trial)
+                if (maximize and s > best_score) or (not maximize and s < best_score):
+                    best_score, best_idx = s, i
+            if best_idx is None:
+                break
+            selected.append(best_idx)
+            running = (running * (len(selected) - 1) + matrix[:, best_idx]) / len(selected)
+            current = best_score
+
+        for i in selected:
+            counts[names[i]] += 1
+
+    total = sum(counts.values())
+    return {n: counts.get(n, 0) / total for n in names}

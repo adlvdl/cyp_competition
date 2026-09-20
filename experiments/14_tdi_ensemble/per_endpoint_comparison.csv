@@ -1,0 +1,3 @@
+endpoint,caruana,incumbent,diff,ci_low,ci_high,p,holm_significant
+CYP3A4_is_TDI,0.3943,0.3737,0.0206,0.0106,0.0308,0.0,true
+CYP2D6_is_TDI,0.1355,0.119,0.0165,-0.0004,0.0338,0.056,false
