@@ -130,12 +130,11 @@ def _(mo):
 def _(C, data, mo, pl):
     tdi_raw = data.load_train_tdi()
 
-    frames = {
-        f"{iso}_is_TDI": tdi_raw.filter(pl.col(f"{iso}_is_TDI").is_not_null()).select(
-            "Molecule_Name", "SMILES", pl.col(f"{iso}_is_TDI").alias("y_true")
-        )
-        for iso in C.TDI_ISOFORMS
-    }
+    # `data.tdi_training_frame` rather than an inline filter: it is what `04` used,
+    # so this notebook's frames are row-for-row identical to the ones `04`'s cached
+    # CheMeleon embeddings were computed against, and those embeddings can be reused
+    # without recomputing or risking a silent row misalignment.
+    frames = {f"{iso}_is_TDI": data.tdi_training_frame(iso) for iso in C.TDI_ISOFORMS}
     TDI_ENDPOINTS = list(frames)
 
     _both = tdi_raw.filter(
@@ -288,6 +287,43 @@ def _(mo):
 
 
 @app.cell
+def _(C, PROJECT_ROOT, TDI_ENDPOINTS, frames, mo, np):
+    # The incumbent's representation: frozen CheMeleon embeddings, exactly as `04`
+    # built them. Reused from `04`'s cache rather than recomputed -- the frames are
+    # row-for-row identical (both come from `data.tdi_training_frame`), verified
+    # before wiring this up, and a CheMeleon embedding pass is minutes of GPU-less
+    # torch work for a result that already exists on disk.
+    _cache_04 = PROJECT_ROOT / "experiments" / "04_methods_tdi" / "cache"
+
+    chemeleon_features = {}
+    for _endpoint in TDI_ENDPOINTS:
+        _iso = _endpoint.split("_")[0]
+        _path = _cache_04 / f"chemeleon_tdi_{_iso}.npy"
+        if _path.exists():
+            _emb = np.load(_path)
+        else:
+            from cyp.graph_models import chemeleon_embed
+
+            _smiles = frames[_endpoint]["SMILES"].to_list()
+            _emb, _ = chemeleon_embed(_smiles, _smiles[:1])
+            np.save(_path, _emb)
+        # A row-count mismatch means the frames have drifted from `04`'s and the
+        # embeddings are no longer aligned -- fail here rather than train on
+        # mismatched rows, which no metric would reveal.
+        assert _emb.shape[0] == frames[_endpoint].height, (
+            f"{_endpoint}: {_emb.shape[0]} embedding rows against "
+            f"{frames[_endpoint].height} frame rows"
+        )
+        chemeleon_features[_endpoint] = _emb
+
+    mo.md(
+        "Frozen CheMeleon embeddings for the incumbent arm: "
+        + ", ".join(f"`{e.split('_')[0]}` {chemeleon_features[e].shape}" for e in TDI_ENDPOINTS)
+    )
+    return (chemeleon_features,)
+
+
+@app.cell
 def _(mo):
     mo.md(
         r"""
@@ -364,6 +400,7 @@ def _(
     OUT_DIR,
     TDI_ENDPOINTS,
     aux_training,
+    chemeleon_features,
     cv,
     frames,
     mo,
@@ -385,9 +422,17 @@ def _(
 
     def _run_arm(arm: str, fold: int) -> pl.DataFrame:
         if arm == "tabicl_singletask":
+            # `features=` is not optional here, and omitting it does not fail loudly.
+            # The default is ECFP-2048, but CLAUDE.md pins TabICL at
+            # `TABICL_MAX_FEATURES=128` for memory reasons -- run it on 2048 raw bits
+            # and it returns **all-NaN probabilities**, which score MCC 0.000 and read
+            # as "the incumbent is terrible" rather than as a configuration error.
+            # Measured directly: CYP3A4 came back 100% NaN across every fold, silently.
+            # `04` passed frozen CheMeleon embeddings; so does this.
             return multitask.run_cv_singletask_classification(
                 frames,
                 method="tabicl",
+                features=chemeleon_features,
                 assignments=ASSIGNMENTS,
                 folds=[fold],
                 seed=42,

@@ -5,7 +5,15 @@ description = "Modelling code for the OpenADMET CYP Inhibition Blind Challenge"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "numpy>=1.26",
+    # numpy>=2.4 is a correctness requirement, not a preference. Under numpy 2.2.6
+    # TabICL returns **all-NaN probabilities** on a ~2,400-row fit and raises
+    # nothing: the fit reports success, the subprocess exits 0, and every downstream
+    # MCC reads 0.000 as if the model learned nothing. Measured directly by
+    # bisection -- clean at numpy 2.4.6, 100% NaN at 2.2.6, same code, same data,
+    # same seed. `unimol_tools` pins `numpy<2.3.0`, so installing the `structure`
+    # extra silently downgrades numpy and breaks the TDI track; the two cannot share
+    # one environment. See CLAUDE.md's environment-traps section.
+    "numpy>=2.4",
     "polars>=1.20",
     # Pandas is a boundary dependency only: the vendored official validators and
     # sklearn expect it. Project code uses Polars -- see CLAUDE.md.
@@ -71,10 +79,25 @@ structure = [
     # output needing parsing) and ODDT (unreleased since 2021, OpenBabel bindings).
     "prolif>=2.2",
     "mdanalysis>=2.7",
-    # Uni-Mol 3D representation. Torch-based, so every call runs in a subprocess --
-    # see src/cyp/unimol.py for the two independent reasons.
-    "unimol_tools>=0.1.6",
 ]
+
+# `unimol_tools` is deliberately NOT in `structure`, and not in any extra installed
+# by `make setup`. It pins `numpy<2.3.0`, and numpy 2.2.6 makes TabICL return
+# all-NaN probabilities on a ~2,400-row fit while raising nothing -- which silently
+# zeroes the whole TDI track (see the `numpy>=2.4` comment above). The two cannot
+# share an environment, and `uv sync` fails outright if both are requested.
+#
+# Notebook 11 is the only code that needs it, that notebook is finished, and its
+# conclusion was that no docking-derived arm beat the incumbent. So the default
+# environment keeps TabICL working. To re-run 11's Uni-Mol arm, install it into a
+# throwaway environment instead:
+#
+#     uv venv /tmp/unimol && VIRTUAL_ENV=/tmp/unimol uv pip install unimol_tools
+#
+# `src/cyp/unimol.py` already runs every call in a subprocess, so it can be pointed
+# at a different interpreter without touching the rest of the repo.
+# (No `unimol` extra: `make setup` runs `uv sync --all-extras`, which would install
+# it and re-break TabICL. It has to live outside this file entirely.)
 dev = [
     "pytest>=8.2",
     "ruff>=0.6",
