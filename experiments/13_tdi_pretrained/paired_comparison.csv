@@ -1,0 +1,4 @@
+arm,vs,threshold,diff,ci_low,ci_high,p_raw,n_paired,p_value,threshold_right,significant
+chemprop_scratch,tabicl_singletask,0.25,-0.1144,-0.1288,-0.1005,0.0,25405,0.0,0.016666666666666666,true
+chemprop_pubchem,tabicl_singletask,0.25,-0.0393,-0.0531,-0.0253,0.0,25405,0.0,0.025,true
+chemprop_pubchem_frozen,tabicl_singletask,0.25,-0.0529,-0.0675,-0.0385,0.0,25405,0.0,0.05,true

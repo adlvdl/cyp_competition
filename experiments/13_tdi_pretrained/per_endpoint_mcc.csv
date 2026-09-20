@@ -1,0 +1,9 @@
+arm,endpoint,threshold,mcc,std
+tabicl_singletask,CYP3A4_is_TDI,0.25,0.375,0.0399
+tabicl_singletask,CYP2D6_is_TDI,0.25,0.1216,0.0458
+chemprop_pubchem,CYP3A4_is_TDI,0.25,0.3234,0.051
+chemprop_pubchem,CYP2D6_is_TDI,0.25,0.1185,0.0578
+chemprop_pubchem_frozen,CYP3A4_is_TDI,0.25,0.3186,0.0392
+chemprop_pubchem_frozen,CYP2D6_is_TDI,0.25,0.0823,0.0538
+chemprop_scratch,CYP3A4_is_TDI,0.25,0.2441,0.0493
+chemprop_scratch,CYP2D6_is_TDI,0.25,0.0481,0.0579

@@ -1,0 +1,5 @@
+arm,threshold,macro_mcc
+tabicl_singletask,0.25,0.2464
+chemprop_pubchem,0.25,0.2182
+chemprop_pubchem_frozen,0.25,0.1976
+chemprop_scratch,0.25,0.1447

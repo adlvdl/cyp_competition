@@ -1,0 +1,3 @@
+endpoint,n,shift_vs_label_r,oracle_mcc,shift_predictability,two_stage_mcc,direct_mcc,two_stage_lift
+CYP3A4,2334,0.464,0.6869,0.2155,0.1744,0.2498,-0.0754
+CYP2D6,1493,0.539,0.8978,0.1235,0.1188,0.1626,-0.0438

@@ -1,0 +1,3 @@
+comparison,diff,ci_low,ci_high,p,holm_significant
+chemprop_pubchem vs chemprop_scratch,0.0751,0.0616,0.089,0.0,true
+chemprop_pubchem vs chemprop_pubchem_frozen,0.0136,-0.0001,0.0271,0.0514,false
