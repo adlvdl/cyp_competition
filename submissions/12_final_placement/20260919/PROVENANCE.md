@@ -5,6 +5,7 @@
 - Challenge data snapshot: `20260908`
 - CV: nested scaffold, 5x5 folds (`experiments/07_placement/oof.parquet`, `pubchem` arm)
 - Target deadline: 2026-09-24 interim
+- **Scored on the live leaderboard 2026-09-20** — see "Returned scores" below
 
 ## Model — unchanged
 
@@ -115,6 +116,36 @@ known.
 TabICL single-task on frozen CheMeleon embeddings, decision threshold 0.25 tuned on
 OOF. Expected macro MCC **0.2483** (CYP3A4 0.3750, CYP2D6 0.1216). No work has been
 done on this track since 2026-09-15.
+
+## Returned scores (live leaderboard, retrieved 2026-09-20)
+
+Submitted 2026-09-19 16:17 UTC. **Macro ST-RAE 0.6578, rank 84/205**, against `07`'s
+0.7040 — a gain of 0.0462 with no model change. TDI macro MCC 0.2111, rank 94/113.
+
+| endpoint | rank | ST-RAE | R2 | Spearman | expected | verdict |
+|:--|--:|--:|--:|--:|:--|:--|
+| CYP1A2 | 81 | 0.6256 | 0.4147 | 0.7423 | 0.42-0.51 | **missed, too optimistic by 0.115** |
+| CYP2C9 | 117 | 0.5567 | 0.5868 | 0.7629 | 0.5567 | exact |
+| CYP2D6 | 88 | 0.8902 | 0.2230 | 0.3610 | 0.8902 | exact |
+| CYP3A4 | 109 | 0.5586 | 0.6102 | 0.7831 | 0.5586 | exact |
+| **MA** | **84** | **0.6578** | 0.4587 | 0.6623 | 0.607-0.629 | missed (CYP1A2 carries it) |
+
+**The three controls passed exactly.** CYP2C9 and CYP3A4 returned `05`'s scores to four
+decimals and CYP2D6 returned `07`'s — identical vectors scoring identically across
+three submissions weeks apart. The live half is stable and scores are comparable across
+submissions, which was the failure mode this document flagged as most important to check
+first. It is ruled out.
+
+**CYP1A2's placement worked; its forecast did not.** 0.6887 unplaced → 0.6256 placed is
+the best CYP1A2 score across all three submissions, so the gate and the direction were
+right. The magnitude was overstated by roughly a factor of two. The back-test had
+already shown the simulator overshooting by +0.040 and +0.128; the real overshoot was
++0.203, outside the range both back-test points spanned. Bracketing by a previously
+observed error assumes that error is bounded by what has been seen, and with two points
+it is not.
+
+**Do not read the simulated ST-RAE as a magnitude.** It is directionally useful for
+choosing between placements and has now twice failed to predict a score.
 
 ## Caveats that belong on the record
 

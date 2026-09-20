@@ -247,7 +247,7 @@ Simulating at these moments reproduces the board (0.747 vs 0.7785), the end-to-e
 
 **CYP2D6 went R2 −0.742 → +0.223** and carries the whole macro gain. **But CYP3A4 got measurably worse** (+0.187 ST-RAE over CV) from being pushed to `k = rho` it did not need at 96% of its ceiling. **Placement on an already-well-placed endpoint is a cost, not a no-op** — apply per endpoint, gated on measured `recoverable`, never uniformly. The macro landing on the CV prediction was partly cancellation (CYP1A2 over-, CYP3A4 under-performed); a macro-only comparison would have hidden both.
 
-**With two scored submissions `intersect` solves three endpoints** — CYP1A2 4.378/1.080, CYP2C9 4.871/1.200, CYP3A4 4.856/1.340, all `disagreement` under 0.005.
+**With two scored submissions `intersect` solves three endpoints** — CYP1A2 4.378/1.080, CYP2C9 4.871/1.200, CYP3A4 4.856/1.340, all `disagreement` under 0.005. **A two-vector `disagreement` is not evidence of correctness** — see `12`, where a third CYP1A2 vector pushed it from 0.0029 to 0.2804 and the three pairwise solves disagreed by 0.5 pIC50 on centre.
 
 **CYP2D6 does not solve, and the failure is a finding.** Submission 87's board R2 (0.223) exceeds the ceiling implied by its own Spearman (0.361 → pearson 0.376 → ceiling 0.141), so `intersect` correctly refuses. The only consistent reading is that CYP2D6's true blind Pearson is **at least 0.472** — the bivariate-normal conversion underestimates by ~30%, because weak correlations are where a skewed, truncated pIC50 distribution departs furthest from normality. **Treat `pearson_from_spearman` as a lower bound on CYP2D6, not a point estimate.**
 
@@ -323,6 +323,39 @@ Alignment against 05's OOF checked directly (1,497 shared fold/compound rows, 0 
 **Atom-level PLIF underperforms its own molecule-level twin, and the likely cause is the missing warm-start, not the feature.** `chemprop_atom_plif` (1.0023) trained from scratch — no PubChem-pretrained encoder is compatible with `--atom-features-path`'s input width, so this arm never got 05's biggest lever (pretraining helps only with the encoder unfrozen, and there was no pretrained encoder to unfreeze here). Whether atom-level attribution beats molecule-level pooling once warm-started is a different, unanswered question; this result cannot distinguish "the representation doesn't help" from "no encoder pretrain was available to receive it."
 
 **Conclusion: ship `pubchem` as-is.** No docking-derived chemprop arm built this session beats 05's incumbent. `plif` remains the best evidence that the protein matters (it wins decisively within LGBM), but every route tried to carry that signal into the model that would actually ship — molecule-level descriptors, atom-level features, with or without a fresh pretrain — landed short of a model that never saw the protein at all. A from-scratch atom-level warm-start bridge (pretraining a `--atom-features-path`-shaped encoder on zero-padded public atom features, mirroring the molecule-level fix) is the one variant not yet tried, and is the natural next step if this is revisited.
+
+### 12_final_placement (2026-09-19, scored 2026-09-20) — per-endpoint placement, and the solve's first failed check
+
+Shipped the interim submission with **no model change** — `05`'s `pubchem` arm, still the incumbent after 06, 08, 09, 10 and 11 each failed to beat it. Three changes over 07, all on placement: `intersect` with two curves instead of a single-vector sign guess, the ST-RAE optimum instead of the R2 optimum, and **per-endpoint gating** on measured `recoverable` (threshold 0.05; there is a 10x gap between the two groups so no threshold between them changes the decision).
+
+**Scored: macro ST-RAE 0.7040 → 0.6578, rank 84/205.** TDI unchanged from 04 as shipped: macro MCC 0.2111, rank 94 (vs 0.2483 CV — ordinary OOF-threshold optimism).
+
+| endpoint | regime | ST-RAE | R2 | expected | verdict |
+|:--|:--|--:|--:|:--|:--|
+| CYP1A2 | placed, ST-RAE optimum | **0.6256** | 0.4147 | 0.42–0.51 | missed by 0.115 |
+| CYP2C9 | unplaced (gated) | 0.5567 | 0.5868 | 0.5567 | exact |
+| CYP2D6 | reuse 07's vector | 0.8902 | 0.2230 | 0.8902 | exact |
+| CYP3A4 | unplaced (gated) | 0.5586 | 0.6102 | 0.5586 | exact |
+| macro | — | **0.6578** | 0.4587 | 0.607–0.629 | missed |
+
+**The three controls passed exactly**, four decimals, across submissions weeks apart. **The live half is stable and scores are comparable across submissions** — the one property everything else in this section assumes, now measured rather than hoped for. Gating is also vindicated directly: CYP2C9/CYP3A4 held their scores where 07's uniform placement had cost them 0.041 and 0.114.
+
+**Placement direction right, magnitude wrong by ~2x.** CYP1A2 went 0.6887 unplaced → 0.6256, its best score across all three submissions. But the simulator overshot by +0.203, outside the +0.040/+0.128 range its own back-test spanned. **Bracketing a forecast by a previously observed error assumes that error is bounded by what you have seen; with two points it is not.** Treat `strae_optimal_placement`'s simulated score as a direction, never a magnitude — it has now failed twice.
+
+**The three-vector solve fails its first real check, and this is the important finding.** A third scored, differently-placed CYP1A2 vector makes `intersect` overdetermined — the first point at which the solved population can be *checked* rather than merely computed. It does not survive:
+
+| vectors | solved mean | solved sd | disagreement |
+|:--|--:|--:|--:|
+| 05 + 07 | 4.378 | 1.080 | 0.0029 |
+| 05 + 12 | 4.222 | 1.660 | 0.0029 |
+| 07 + 12 | 4.736 | 1.670 | 0.0036 |
+| **all three** | 4.183 | 1.100 | **0.2804** |
+
+Every *pair* agrees to 0.003 while landing on populations 0.5 apart in centre and 0.6 in spread; adding the third vector pushes disagreement to 0.2804, at the ~0.3 ceiling above which this section already says the solve must not be used. **Pairwise agreement was never evidence of correctness** — two curves always intersect somewhere, and a tight `disagreement` on two vectors measures only that a solution exists, not that it is the right one. The same blind spot as CYP2D6's ρ scan, which also showed near-zero disagreement at every ρ while the centre slid a full pIC50 unit. **`disagreement` is only informative once the system is overdetermined.** Do not quote a two-vector solve's tightness as confidence again.
+
+The practical reading: the solved *population* is not identified to better than ~0.5 pIC50 on centre, but the *placement direction* it implies has now paid on the board three times. Use it to choose a direction and gate which endpoints move; do not treat its moments as measured constants.
+
+**CYP1A2 still has headroom.** Board Spearman 0.7423 → Pearson 0.758 → R2 ceiling 0.574, against 0.4147 scored: **0.160 still recoverable**, the only endpoint where that is true (CYP2C9 and CYP3A4 are at 97% and 96% of ceiling). Its three measured placements, narrowest scoring best: sd 0.826 → 0.6887, sd 1.075 → 0.6559, sd 0.648 → **0.6256**. Centre moved too, so spread and centre are not separated by these three points.
 
 ## Auxiliary and public data
 
