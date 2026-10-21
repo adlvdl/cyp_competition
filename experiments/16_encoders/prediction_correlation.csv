@@ -1,0 +1,13 @@
+endpoint,pair,pearson_r
+CYP1A2_pIC50_direct_inhibition,tabicl_chemeleon vs tabicl_monroe,0.782
+CYP1A2_pIC50_direct_inhibition,tabicl_chemeleon vs tabicl_atom_jepa,0.797
+CYP1A2_pIC50_direct_inhibition,tabicl_monroe vs tabicl_atom_jepa,0.753
+CYP2C9_pIC50_direct_inhibition,tabicl_chemeleon vs tabicl_monroe,0.814
+CYP2C9_pIC50_direct_inhibition,tabicl_chemeleon vs tabicl_atom_jepa,0.797
+CYP2C9_pIC50_direct_inhibition,tabicl_monroe vs tabicl_atom_jepa,0.793
+CYP2D6_pIC50_direct_inhibition,tabicl_chemeleon vs tabicl_monroe,0.738
+CYP2D6_pIC50_direct_inhibition,tabicl_chemeleon vs tabicl_atom_jepa,0.682
+CYP2D6_pIC50_direct_inhibition,tabicl_monroe vs tabicl_atom_jepa,0.681
+CYP3A4_pIC50_direct_inhibition,tabicl_chemeleon vs tabicl_monroe,0.877
+CYP3A4_pIC50_direct_inhibition,tabicl_chemeleon vs tabicl_atom_jepa,0.861
+CYP3A4_pIC50_direct_inhibition,tabicl_monroe vs tabicl_atom_jepa,0.847

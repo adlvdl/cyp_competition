@@ -98,6 +98,16 @@ structure = [
 # at a different interpreter without touching the rest of the repo.
 # (No `unimol` extra: `make setup` runs `uv sync --all-extras`, which would install
 # it and re-break TabICL. It has to live outside this file entirely.)
+# Frozen 3D molecular encoders for notebooks/16_encoders.py, embedded in a subprocess
+# like CheMeleon (torch cannot share a process with LightGBM). Neither pins numpy, so
+# unlike `unimol_tools` they coexist with TabICL -- verify that stays true on upgrade:
+# `uv pip list | grep numpy` must stay >=2.4. Monroe is not on PyPI; its weights are a
+# 300 MB Git LFS file fetched by `cyp.encoders.fetch_monroe_weights` into .encoders/.
+encoders = [
+    "atom-jepa[rdkit]>=0.3",
+    "monroe @ git+https://github.com/blazejba/monroe",
+    "datamol>=0.12",
+]
 dev = [
     "pytest>=8.2",
     "ruff>=0.6",
@@ -106,6 +116,10 @@ dev = [
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+# Required for the `encoders` extra: Monroe is only installable from git.
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/cyp"]

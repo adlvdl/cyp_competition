@@ -1,0 +1,4 @@
+comparison,macro_diff,fold_ci_low,fold_ci_high,folds_better,repeat_diffs,repeats_better,repeat_t_p,repeat_holm_significant
+caruana_C - caruana_A,-0.0142,-0.0172,-0.0112,25,-0.0132 -0.0085 -0.0139 -0.0166 -0.0188,5,0.0012,true
+caruana_B - caruana_A,-0.0051,-0.0072,-0.003,18,-0.0038 -0.0055 -0.0078 -0.0038 -0.0045,5,0.0026,true
+caruana_C - caruana_B,-0.0091,-0.0117,-0.0066,24,-0.0094 -0.0030 -0.0061 -0.0128 -0.0143,5,0.0119,true

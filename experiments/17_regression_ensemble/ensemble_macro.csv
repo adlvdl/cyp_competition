@@ -1,0 +1,9 @@
+method,macro_st_rae,std
+caruana_C,0.6513,0.02
+caruana_B,0.6604,0.0225
+caruana_A,0.6655,0.0243
+uniform_A,0.666,0.0243
+uniform_B,0.6684,0.0224
+uniform_C,0.6784,0.0194
+tabicl_monroe,0.702,0.0295
+pubchem,0.716,0.0272

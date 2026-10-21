@@ -1,0 +1,4 @@
+method,macro_st_rae,std,n_folds
+tabicl_monroe,0.702,0.0295,25
+tabicl_chemeleon,0.7638,0.0296,25
+tabicl_atom_jepa,0.7751,0.0232,25

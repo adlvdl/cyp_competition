@@ -81,6 +81,7 @@ class _timeout:
             signal.setitimer(signal.ITIMER_REAL, 0)
         return False
 
+
 #: Columns `descriptors` returns, in order. Exposed so a caller can select the 2D
 #: subset without generating conformers -- the 2D arm is seconds, the 3D arm minutes.
 DESCRIPTOR_2D = (
@@ -302,8 +303,7 @@ def descriptors(
         records = []
         with Parallel(n_jobs=n_jobs, return_as="generator") as parallel:
             jobs = (
-                delayed(_descriptor_row)(smi, include_3d, n_conformers, timeout_s)
-                for smi in smiles
+                delayed(_descriptor_row)(smi, include_3d, n_conformers, timeout_s) for smi in smiles
             )
             for i, record in enumerate(parallel(jobs)):
                 records.append(record)

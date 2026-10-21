@@ -1,0 +1,4 @@
+method,CYP2C9_pIC50_direct_inhibition,CYP2D6_pIC50_direct_inhibition,CYP3A4_pIC50_direct_inhibition,CYP1A2_pIC50_direct_inhibition
+tabicl_atom_jepa,0.7132,0.9532,0.5898,0.8442
+tabicl_chemeleon,0.6907,0.953,0.5562,0.8554
+tabicl_monroe,0.6125,0.9344,0.4788,0.7822

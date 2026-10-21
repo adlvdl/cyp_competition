@@ -1,0 +1,17 @@
+endpoint,slice,n,comparison,diff,ci_low,ci_high,p_value,significant
+CYP1A2_pIC50_direct_inhibition,nn_sim <= 0.379,3567,uniform_A - pubchem,-0.077,-0.0914,-0.0629,0.0,true
+CYP2C9_pIC50_direct_inhibition,nn_sim <= 0.366,1442,uniform_A - pubchem,-0.0633,-0.0844,-0.0429,0.0,true
+CYP2D6_pIC50_direct_inhibition,nn_sim <= 0.344,3722,uniform_A - pubchem,-0.0498,-0.0618,-0.0384,0.0,true
+CYP2D6_pIC50_direct_inhibition,nn_sim <= 0.344,3722,caruana_B - caruana_A,-0.0295,-0.0376,-0.0219,0.0,true
+CYP2D6_pIC50_direct_inhibition,nn_sim <= 0.344,3722,caruana_C - caruana_A,-0.0335,-0.0452,-0.0224,0.0,true
+CYP3A4_pIC50_direct_inhibition,nn_sim <= 0.424,4561,uniform_A - pubchem,-0.0417,-0.0503,-0.0333,0.0,true
+CYP1A2_pIC50_direct_inhibition,nn_sim <= 0.379,3567,caruana_B - caruana_A,-0.0102,-0.0165,-0.0039,0.0012,true
+CYP2C9_pIC50_direct_inhibition,nn_sim <= 0.366,1442,caruana_B - caruana_A,-0.0062,-0.0131,0.0005,0.071,false
+CYP1A2_pIC50_direct_inhibition,nn_sim <= 0.379,3567,caruana_C - caruana_A,-0.0078,-0.0181,0.0024,0.138,false
+CYP2C9_pIC50_direct_inhibition,nn_sim <= 0.366,1442,caruana_C - caruana_A,-0.0099,-0.0236,0.0035,0.1458,false
+CYP3A4_pIC50_direct_inhibition,nn_sim <= 0.424,4561,caruana_C - caruana_A,-0.0033,-0.0101,0.0034,0.3224,false
+CYP3A4_pIC50_direct_inhibition,nn_sim <= 0.424,4561,caruana_C - caruana_B,-0.0033,-0.0101,0.0034,0.3224,false
+CYP2D6_pIC50_direct_inhibition,nn_sim <= 0.344,3722,caruana_C - caruana_B,-0.004,-0.0126,0.0046,0.3748,false
+CYP1A2_pIC50_direct_inhibition,nn_sim <= 0.379,3567,caruana_C - caruana_B,0.0023,-0.0049,0.0095,0.5134,false
+CYP2C9_pIC50_direct_inhibition,nn_sim <= 0.366,1442,caruana_C - caruana_B,-0.0038,-0.0159,0.0086,0.5498,false
+CYP3A4_pIC50_direct_inhibition,nn_sim <= 0.424,4561,caruana_B - caruana_A,0.0,0.0,0.0,1.0,false

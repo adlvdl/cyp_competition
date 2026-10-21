@@ -1,0 +1,22 @@
+family,scope,comparison,diff,ci_low,ci_high,p_value,holm_significant
+ensemble vs incumbent,macro,caruana - tabicl_singletask,0.0185361379660983,0.004852074370981615,0.032142345325433,0.0076,true
+ensemble vs incumbent,macro,uniform - tabicl_singletask,0.010345273620141711,-0.008961624418696119,0.02976193412563466,0.2976,false
+ensemble vs incumbent,CYP3A4_is_TDI,caruana - tabicl_singletask,0.02060362810589844,0.006855596450875244,0.034727989529202856,0.0022,true
+ensemble vs incumbent,CYP3A4_is_TDI,uniform - tabicl_singletask,0.008316294414206393,-0.010689361842962914,0.027280397322337953,0.3842,false
+ensemble vs incumbent,CYP2D6_is_TDI,caruana - tabicl_singletask,0.016468647826298158,-0.007164613155891418,0.04015517414606669,0.1708,false
+ensemble vs incumbent,CYP2D6_is_TDI,uniform - tabicl_singletask,0.012374252826077028,-0.021388782317326178,0.045943780252244104,0.4808,false
+arms vs incumbent,macro,chemprop_pubchem - tabicl_singletask,-0.02810951859086136,-0.05290477410127505,-0.003445414570625962,0.0252,true
+arms vs incumbent,macro,chemprop_pubchem_frozen - tabicl_singletask,-0.04873818611571477,-0.07744171527635721,-0.02004475336780402,0.001,true
+arms vs incumbent,macro,chemprop_scratch - tabicl_singletask,-0.10162352033880584,-0.12555226035229397,-0.07712418311494415,0.0,true
+arms vs incumbent,CYP3A4_is_TDI,chemprop_pubchem - tabicl_singletask,-0.05296624042622594,-0.0773923984744659,-0.02838855335878086,0.0,true
+arms vs incumbent,CYP3A4_is_TDI,chemprop_pubchem_frozen - tabicl_singletask,-0.056418364174058044,-0.086154839580134,-0.026066293185226547,0.0,true
+arms vs incumbent,CYP3A4_is_TDI,chemprop_scratch - tabicl_singletask,-0.13168350718919,-0.15570387513482567,-0.10725871147979912,0.0,true
+arms vs incumbent,CYP2D6_is_TDI,chemprop_pubchem - tabicl_singletask,-0.0032527967554967785,-0.04639680539261602,0.03951492765734808,0.8838,false
+arms vs incumbent,CYP2D6_is_TDI,chemprop_pubchem_frozen - tabicl_singletask,-0.04105800805737149,-0.08979615885960851,0.00842357699296381,0.099,false
+arms vs incumbent,CYP2D6_is_TDI,chemprop_scratch - tabicl_singletask,-0.07156353348842166,-0.1127949817418181,-0.02878186840796463,0.0012,true
+what pretraining does,macro,chemprop_pubchem - chemprop_scratch,0.07351400174794448,0.05244511043854764,0.09370024727876346,0.0,true
+what pretraining does,macro,chemprop_pubchem - chemprop_pubchem_frozen,0.020628667524853407,-0.0032828670221215273,0.0439685445418396,0.0918,false
+what pretraining does,CYP3A4_is_TDI,chemprop_pubchem - chemprop_scratch,0.07871726676296406,0.0556404742163226,0.10128724841128664,0.0,true
+what pretraining does,CYP3A4_is_TDI,chemprop_pubchem - chemprop_pubchem_frozen,0.003452123747832103,-0.02261316729713562,0.028773850903820345,0.8116,false
+what pretraining does,CYP2D6_is_TDI,chemprop_pubchem - chemprop_scratch,0.06831073673292488,0.03332752509656096,0.10247878609427848,0.0,true
+what pretraining does,CYP2D6_is_TDI,chemprop_pubchem - chemprop_pubchem_frozen,0.03780521130187471,-0.002380933434996059,0.07695868312574357,0.063,false

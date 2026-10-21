@@ -254,3 +254,6 @@ experiments/**/contention_snapshots/.history/
 # Featurization caches (09) -- pure function of the data snapshot, no model fits.
 experiments/**/cache/*.npy
 experiments/**/cache/a3_descriptors_*.parquet
+
+# Encoder weights (Monroe 300 MB LFS file) and embedding caches
+.encoders/

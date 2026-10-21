@@ -1,0 +1,17 @@
+endpoint,model,weight
+CYP1A2_pIC50_direct_inhibition,pubchem,0.25
+CYP1A2_pIC50_direct_inhibition,tabicl_monroe,0.5
+CYP1A2_pIC50_direct_inhibition,tabicl_atom_jepa,0.25
+CYP1A2_pIC50_direct_inhibition,tabicl_chemeleon,0.0
+CYP2C9_pIC50_direct_inhibition,pubchem,0.5
+CYP2C9_pIC50_direct_inhibition,tabicl_monroe,0.5
+CYP2C9_pIC50_direct_inhibition,tabicl_atom_jepa,0.0
+CYP2C9_pIC50_direct_inhibition,tabicl_chemeleon,0.0
+CYP2D6_pIC50_direct_inhibition,pubchem,0.4
+CYP2D6_pIC50_direct_inhibition,tabicl_monroe,0.2
+CYP2D6_pIC50_direct_inhibition,tabicl_atom_jepa,0.2
+CYP2D6_pIC50_direct_inhibition,tabicl_chemeleon,0.2
+CYP3A4_pIC50_direct_inhibition,pubchem,0.5
+CYP3A4_pIC50_direct_inhibition,tabicl_monroe,0.5
+CYP3A4_pIC50_direct_inhibition,tabicl_atom_jepa,0.0
+CYP3A4_pIC50_direct_inhibition,tabicl_chemeleon,0.0

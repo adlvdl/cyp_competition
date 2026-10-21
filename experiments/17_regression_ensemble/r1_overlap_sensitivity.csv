@@ -1,0 +1,8 @@
+method,all compounds,overlap removed,shift
+caruana_A,0.6655,0.667,0.0015
+caruana_B,0.6604,0.6618,0.0014
+caruana_C,0.6513,0.653,0.0017
+pubchem,0.716,0.7189,0.0029
+tabicl_chemeleon,0.7638,0.7651,0.0013
+tabicl_monroe,0.702,0.7015,-0.0005
+uniform_A,0.666,0.6677,0.0017
