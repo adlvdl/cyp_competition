@@ -1,0 +1,5 @@
+endpoint,raw_mean,raw_sd,placed_mean,placed_sd,floor_ties,spearman_vs_17
+CYP1A2_pIC50_direct_inhibition,4.895,0.731,4.485,0.648,0,0.988
+CYP2C9_pIC50_direct_inhibition,4.877,0.734,4.816,0.782,0,0.982
+CYP2D6_pIC50_direct_inhibition,4.613,0.423,3.114,0.538,0,0.944
+CYP3A4_pIC50_direct_inhibition,4.675,0.921,4.684,0.941,0,0.983

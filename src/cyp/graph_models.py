@@ -230,6 +230,10 @@ class ChempropModel(SmilesModelMixin):
         final_lr: float = 1e-4,
         uncertainty_method: str | None = None,
         ensemble_size: int = 1,
+        task_weights: list[float] | None = None,
+        patience: int | None = None,
+        warmup_epochs: int | None = None,
+        loss_function: str | None = None,
     ) -> None:
         """
         Args:
@@ -263,6 +267,14 @@ class ChempropModel(SmilesModelMixin):
             ensemble_size: Number of checkpoints chemprop trains in one `train` call.
                 Only meaningful (and only multiplies fit cost) when
                 `uncertainty_method="ensemble"`; left at 1 otherwise.
+            task_weights: Per-head loss weights (`--task-weights`), multi-target only.
+                None leaves chemprop's uniform weighting, unchanged from before.
+            patience: Early-stopping patience in epochs (`--patience`), multi-target
+                only. None leaves chemprop's default.
+            warmup_epochs: Linear LR warm-up length (`--warmup-epochs`), multi-target
+                only. None leaves chemprop's default.
+            loss_function: Chemprop loss name, e.g. "mae" (`--loss-function`),
+                multi-target only. None leaves the task type's default (MSE).
         """
         if pred_type not in ("regression", "classification"):
             raise ValueError("pred_type must be 'regression' or 'classification'")
@@ -295,6 +307,10 @@ class ChempropModel(SmilesModelMixin):
         self.final_lr = final_lr
         self.uncertainty_method = uncertainty_method
         self.ensemble_size = ensemble_size
+        self.task_weights = task_weights
+        self.patience = patience
+        self.warmup_epochs = warmup_epochs
+        self.loss_function = loss_function
         self.target_col: str = "target"
 
     def _task_type(self) -> str:
@@ -746,6 +762,19 @@ class ChempropMultitargetModel(ChempropModel):
             args += ["--ensemble-size", str(self.ensemble_size)]
         if self.descriptor_columns:
             args += ["--descriptors-columns", *self.descriptor_columns]
+        if self.task_weights is not None:
+            if len(self.task_weights) != len(self.targets):
+                raise ValueError(
+                    f"task_weights has {len(self.task_weights)} entries for "
+                    f"{len(self.targets)} targets"
+                )
+            args += ["--task-weights", *[repr(float(w)) for w in self.task_weights]]
+        if self.patience is not None:
+            args += ["--patience", str(self.patience)]
+        if self.warmup_epochs is not None:
+            args += ["--warmup-epochs", str(self.warmup_epochs)]
+        if self.loss_function is not None:
+            args += ["--loss-function", self.loss_function]
         return args
 
     def _check_descriptors(

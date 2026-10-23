@@ -209,6 +209,142 @@ def run_cv_auxiliary_heads(
     return pl.DataFrame(records)
 
 
+def pooled_wide_frame(
+    frames: dict[str, pl.DataFrame],
+    public: pl.DataFrame,
+    public_columns: list[str],
+    auxiliary_targets: pl.DataFrame | None = None,
+) -> tuple[pl.DataFrame, list[str]]:
+    """Challenge rows and public rows in one wide training frame.
+
+    The pooled alternative to pretrain-then-fine-tune: public compounds become rows of
+    the same table as the challenge compounds, each source on its own head, and one
+    model is trained on all of it. A cell no source measured stays null and chemprop
+    masks it out of the loss.
+
+    Public rows are expected to be structurally disjoint from the challenge
+    compounds (`full_union_matrix`'s ``exclude_smiles``). That is what makes the
+    cross-validation clean: a held-out challenge compound has no public twin whose
+    labels the model could have trained on.
+
+    Args:
+        frames: Scored endpoint -> training frame.
+        public: Wide public frame with ``smiles_std`` and `public_columns`.
+        public_columns: Public heads to keep, in head order. Anything else in
+            `public` (notably its columns named like the scored endpoints, which hold
+            Veith pIC50 for pretraining) is dropped, so a public label never lands on
+            a scored head.
+        auxiliary_targets: Challenge-side extra heads keyed on ``Molecule_Name``
+            (e.g. `auxiliary.screen_targets`), left-joined onto challenge rows only.
+
+    Returns:
+        `(wide, heads)` -- scored endpoints first, then challenge auxiliaries, then
+        public heads. ``Molecule_Name`` is prefixed ``PUB-`` on public rows.
+    """
+    endpoints = list(frames)
+    challenge = _wide_frame(frames)
+    aux_columns: list[str] = []
+    if auxiliary_targets is not None:
+        aux_columns = [c for c in auxiliary_targets.columns if c not in ("Molecule_Name", "SMILES")]
+        challenge = challenge.join(
+            auxiliary_targets.select(["Molecule_Name", *aux_columns]), on="Molecule_Name", how="left"
+        )
+    heads = endpoints + aux_columns + list(public_columns)
+
+    pub = (
+        public.select("smiles_std", *public_columns)
+        .rename({"smiles_std": "SMILES"})
+        .with_row_index("_i")
+        .with_columns(("PUB-" + pl.col("_i").cast(pl.Utf8)).alias("Molecule_Name"))
+        .drop("_i")
+    )
+    wide = pl.concat([challenge, pub], how="diagonal_relaxed")
+    return wide.select("Molecule_Name", "SMILES", *heads), heads
+
+
+def run_cv_pooled(
+    frames: dict[str, pl.DataFrame],
+    pooled: pl.DataFrame,
+    heads: list[str],
+    method_name: str = "chemprop_pooled",
+    task_weights: list[float] | None = None,
+    n_outer: int = 5,
+    n_inner: int = 5,
+    seed: int = 42,
+    p_val: float = 0.1,
+    assignments: pl.DataFrame | None = None,
+    folds: list[int] | None = None,
+    on_fold=None,
+    **chemprop_kwargs,
+) -> pl.DataFrame:
+    """Train one model per fold on challenge training compounds plus every public row.
+
+    The counterpart to `run_cv_pretrained`: no checkpoint, no fine-tune stage. Each
+    fold's held-out challenge compounds are removed from the training table whole
+    (every head), and the public rows -- disjoint from the challenge by construction --
+    are always in. The early-stopping set is a random `p_val` of the *combined*
+    training rows, so it is dominated by public rows in proportion to their share.
+
+    Args:
+        frames: Scored endpoint -> training frame.
+        pooled: Output of `pooled_wide_frame`.
+        heads: Head order of `pooled`; the scored endpoints must come first.
+        task_weights: One loss weight per head, passed to chemprop.
+        folds: Run only these fold indices (fold-major sweeps).
+        **chemprop_kwargs: Forwarded to `ChempropMultitargetModel`.
+    """
+    from .graph_models import ChempropMultitargetModel
+
+    if assignments is None:
+        _, assignments = shared_scaffold_folds(frames, n_outer=n_outer, n_inner=n_inner, seed=seed)
+    endpoints = list(frames)
+    if heads[: len(endpoints)] != endpoints:
+        raise ValueError("the scored endpoints must be the first heads, in frames order")
+
+    is_public = pl.col("Molecule_Name").str.starts_with("PUB-")
+    public_rows = pooled.filter(is_public)
+    challenge_rows = pooled.filter(~is_public)
+
+    stacked, _ = endpoint_indicator_frame(frames)
+    n_folds = assignments["fold"].n_unique()
+
+    records: list[dict] = []
+    for fold, outer, inner, train_long, _val, test_long in fold_assignment_splits(
+        stacked, assignments
+    ):
+        if folds is not None and fold not in folds:
+            continue
+
+        train_names = set(train_long["Molecule_Name"].to_list())
+        train_wide = pl.concat(
+            [
+                challenge_rows.filter(pl.col("Molecule_Name").is_in(train_names)),
+                public_rows,
+            ]
+        )
+        fit_wide, val_wide = _split_validation(train_wide, seed, fold, p_val)
+
+        model = ChempropMultitargetModel(targets=heads, task_weights=task_weights, **chemprop_kwargs)
+        model.fit(
+            fit_wide["SMILES"].to_list(),
+            fit_wide.select(heads).to_numpy(),
+            smiles_val=val_wide["SMILES"].to_list(),
+            y_val=val_wide.select(heads).to_numpy(),
+        )
+
+        test_names = set(test_long["Molecule_Name"].to_list())
+        test_wide = challenge_rows.filter(pl.col("Molecule_Name").is_in(test_names)).sort(
+            "Molecule_Name"
+        )
+        predictions = model.predict(test_wide["SMILES"].to_list())
+
+        y_pred = _predictions_for(test_long, test_wide, predictions, heads)
+        records.extend(_oof_records(test_long, y_pred, method_name, fold, outer, inner))
+        report_fold(on_fold, fold, n_folds)
+
+    return pl.DataFrame(records)
+
+
 def run_cv_augmented(
     frames: dict[str, pl.DataFrame],
     augmented_frames: dict[str, pl.DataFrame],
