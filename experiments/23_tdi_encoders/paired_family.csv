@@ -1,0 +1,4 @@
+candidate,vs,diff,ci_low,ci_high,p,comparison,threshold,significant
+caruana_P1,caruana_P0,0.02776507876524259,0.01857144073801074,0.03701482708890171,0.0,caruana_P1 vs caruana_P0,0.016666666666666666,true
+tabicl_monroe,tabicl_singletask,0.016642122049124908,0.003158163778466304,0.03036913681644697,0.0148,tabicl_monroe vs tabicl_singletask,0.025,true
+tabicl_atom_jepa,tabicl_singletask,-0.008823298220553832,-0.022775825288669976,0.005083798688761226,0.2068,tabicl_atom_jepa vs tabicl_singletask,0.05,false

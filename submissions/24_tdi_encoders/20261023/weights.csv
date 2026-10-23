@@ -1,0 +1,3 @@
+endpoint,tabicl_singletask,tabicl_monroe,tabicl_atom_jepa,chemprop_scratch,chemprop_pubchem,chemprop_pubchem_frozen
+CYP3A4_is_TDI,0.2222,0.2857,0.2381,0.0,0.127,0.127
+CYP2D6_is_TDI,0.1818,0.3636,0.1818,0.0,0.1818,0.0909

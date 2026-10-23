@@ -245,6 +245,123 @@ Every optimum at threshold 0.25, consistent with `04`. The incumbent reproduced 
 
 **Infrastructure:** `ensemble.caruana_selection` — forward selection with replacement, bagged. Chosen over `sweep_weights` because **MCC cannot be decomposed per row** (it comes from a confusion matrix over the whole set), so a coarse weight grid has no structure to exploit; Caruana only ever asks "does adding this candidate improve the score", which any metric can answer. Also safer than a continuous optimizer on correlated candidates, which can reallocate weight destructively between near-duplicates. Pinned by `tests/test_ensemble_selection.py`.
 
+### 15_phase1_review (2026-10-20) — trains nothing; re-tests 03/05/04 with the fold as the unit
+
+`03` and `05` bootstrapped the pooled 32,625 OOF **rows**. Every compound appears in five outer repeats, so the intervals were too narrow, and pooling the four endpoints puts a single constant's error in the denominator rather than the macro-average the board ranks on. `15` bootstraps the 25 **per-fold macro differences** instead (still anti-conservative, since folds from different repeats overlap — read as a lower bound on uncertainty), Holm within each family. Where this changes an earlier claim, `15` wins:
+
+| claim | earlier | fold-level, Holm |
+|:--|:--|:--|
+| 05 `pubchem` vs control | p=0.000 | −0.0143, p=0.0036, **significant** |
+| 05 `aux_screen` vs control | significant | −0.0089, p=0.0256 vs threshold 0.0167, **not significant** |
+| 05 `pubchem_frozen` vs control | significant, wrong direction | +0.0220, p=0.000, holds |
+| 03 `xgb` / `lgbm` multitask gain | −0.0348 / −0.0256 | −0.049 / −0.037, both significant |
+| 03 `tabpfn` multitask | −0.0019, not significant | −0.0071, p=0.05, not significant |
+| 03 `tabicl` multitask | +0.0083, "hurts" | +0.0048, p=0.096, **not significant** |
+| 04 TDI multitask | only `xgb` significant | same: `xgb` −0.034 only |
+
+Interim board position (full test set, submission 12): macro ST-RAE 0.6384, rank 78/219. Spearman rank is lower (119/219) than ST-RAE rank, so part of our standing comes from placement, not ordering.
+
+### 16_encoders (2026-10-20) — frozen 3D encoders: Monroe beats CheMeleon, Atom-JEPA does not
+
+Same readout as `03`'s control (TabICL, PCA 128, 2 estimators, seed 42), only the embedding changes. Shared folds, macro ST-RAE:
+
+| encoder | macro ST-RAE | vs CheMeleon |
+|:--|--:|:--|
+| **Monroe** | **0.7020** | better on all four (−0.073 / −0.078 / −0.077 / −0.019 on CYP1A2 / 2C9 / 3A4 / 2D6), Holm-significant |
+| CheMeleon (control) | 0.7638 | — |
+| Atom-JEPA (last block) | 0.7751 | worse on CYP3A4 (+0.033) and CYP2C9 (+0.023), tied elsewhere |
+
+Monroe alone beats `pubchem` (0.7160) significantly only on CYP1A2 (−0.038); on the other three the difference is not significant. **A plain 50/50 blend of Monroe and `pubchem` scores 0.6660 and wins 25/25 folds**, which is what made `17` worth running.
+
+**Leakage audit (`scripts/audit_monroe_pcba_overlap.py`).** Monroe pretrains on PCBA, which contains the Veith CYP panel the challenge derives from. 225 of 4,905 training compounds (4.6%) and **1 of 750 blind compounds** carry a label there. The blind set is clean; for CV, `17` re-ran the gain with the 225 dropped.
+
+### 17_regression_ensemble (2026-10-20) — pool B ships; correlation of errors, not predictions, predicts blend value
+
+Nothing retrained; weights fitted on four outer repeats and scored on the fifth, rotated. Pools: **A** `pubchem` + Monroe, **B** A + Atom-JEPA + CheMeleon, **C** all 20 candidates. Macro ST-RAE vs `pubchem`: A −0.0505, B −0.0556, C −0.0648 (all 25/25 folds). C−B −0.0091 (24/25 folds), B−A −0.0051 (18/25).
+
+**`14`'s rule of thumb was wrong in one direction.** `14` said ensembles pay at r 0.30–0.62 and not at ~0.94. Monroe and `pubchem` correlate 0.77–0.90 and the blend still won every fold. Predictions correlate; *errors* are what matter, and `marginal_value.csv` measures each of the 20 candidates by what it adds to the Monroe+`pubchem` blend. Uniform averaging of pool C (−0.0376) is much worse than Caruana (−0.0648): with 20 members **selection, not averaging, is the gain**.
+
+### 18_shift_check (2026-10-20) — does the pool ranking survive the blind set's shift
+
+Reweighted OOF toward the blind set on two axes measurable without blind labels (nearest-neighbour similarity, predicted pIC50), pre-registered failure criteria. Effective sample sizes 0.19–0.86 (`effective_sample_size.csv`), so the strongest schemes are noisy.
+
+- The Monroe+`pubchem` blend beats `pubchem` in **100%** of resamples under every scheme.
+- C vs B at 300 compounds per endpoint: 88% unshifted, **70–79% shifted**. The pre-registered criterion (sign change on CYP2D6, or p<0.5) did **not** fire — CYP2D6 favours C in every scheme (92–95%). **B was shipped on judgement, not because the criterion tripped.**
+
+### Board record, 17 (live, 2026-10-21) — regression improved everywhere, rank did not
+
+Submission `17_regression_ensemble` (pool B, 12's placement). Snapshot `data/leaderboard/20261021/` (`scripts/snapshot_leaderboard.py`).
+
+| endpoint | 12 (live) | 17 (live) |
+|:--|--:|--:|
+| CYP1A2 | 0.6256 | **0.5882** |
+| CYP2C9 | 0.5567 | **0.5105** |
+| CYP2D6 | 0.8902 | **0.8411** |
+| CYP3A4 | 0.5586 | **0.5438** |
+| macro ST-RAE | 0.6578 | **0.6209** |
+
+**Rank went 84/205 to 85/257**: the field grew by 52 entries while we improved by 0.037, so a better score reads as a worse rank. Compare scores across snapshots, ranks only within one. CYP2D6 (−0.049) and CYP2C9 (−0.046) gained most; CYP3A4 moved least (−0.015).
+
+**TDI did not follow its CV.** `14`'s ensemble (CV +0.0197 over `04`, Holm-significant) shipped inside 17 and scored macro MCC **0.2028** (rank 121; CYP3A4 0.3527, CYP2D6 0.0528) against the 0.2111 `04`'s model scored in 12. The live half is small and `13` already recorded OOF-threshold optimism of this size on CYP3A4, so this neither confirms nor refutes the ensemble, but it is not the +0.02 CV predicted.
+
+### 19_seed_spread / 19b — seed noise in the final fits is real and was never controlled
+
+Chemprop's `--pytorch-seed`/`--data-seed` were **never passed anywhere in the repo** before this; `fit_predict_test_multitarget(seed=)` only seeds the validation carve-out. `19` wraps `graph_models._run_chemprop_cli` to append both, and refits the shipped `pubchem` on 100% of the data with seeds 0–4 from the one pretrain checkpoint (`.chemprop_pretrain/pubchem`; the pretraining seed is still fixed). `19b` does the same for the two TabICL members (seeds 42, 0–3).
+
+| member | seed-pair Spearman, mean | per-compound seed SD (pIC50) | worst case |
+|:--|--:|--:|:--|
+| `pubchem` | 0.934–0.976 | 0.10–0.15 | CYP2D6 0.934 (worst pair 0.873) |
+| `tabicl_monroe` | 0.972–0.992 | 0.056–0.087 | CYP2D6 0.972 |
+| `tabicl_atom_jepa` | 0.917–0.983 | 0.070–0.123 | CYP2D6 0.917 (worst pair 0.902) |
+
+**TabICL is not deterministic across seeds** (PCA to 128 and 2 estimators leave real variance), and the noisiest member is the one with the weakest CV score. 05's shipped vector sits at Spearman 0.88–0.97 from the 5-seed mean. Expected gain from seed means on the blend is ~0.003–0.005 macro; CV has no seed-averaged OOF, so it is **unmeasured**, and the Caruana weights were fitted on single-seed members.
+
+### 20_pooled_workbench / 21_pooled_ensemble (2026-10-22) — a worse model that improves the blend
+
+Replicates the SuperCowPowers workbench regression recipe (`union-p30`, [blog](https://supercowpowers.github.io/workbench/blogs/cyp_challenge/)): **one from-scratch multitask chemprop** on challenge rows plus public rows, 17 heads (4 scored endpoints, challenge auxiliary heads, public sources as extra heads on extra rows `PUB-<i>`), inverse-count weights on the scored heads (mean-normalised to 1), 0.30 on the rest, template defaults (hidden 700, depth 5, MAE, patience 40). All public structures matching any challenge compound are excluded. Infrastructure: `aux_training.pooled_wide_frame`, `aux_training.run_cv_pooled`, and `task_weights`/`patience`/`warmup_epochs`/`loss_function` on `ChempropModel`.
+
+| arm | macro ST-RAE |
+|:--|--:|
+| **Caruana, pool B + pooled** | **0.6390** |
+| uniform, pool B + pooled | 0.6476 |
+| Caruana, pool B (17) | 0.6604 |
+| `pubchem` | 0.7160 |
+| pooled alone | 0.7382 |
+
+**Alone it loses; in the blend it wins.** Pooled vs `pubchem`: +0.0222 (worse), 5/25 folds, Holm-significant. Pool B + pooled vs pool B: **−0.0214** (95% CI [−0.0248, −0.0181]), 25/25 folds, Holm-significant, and significant on every endpoint (CYP2C9 −0.033, CYP3A4 −0.022, CYP2D6 −0.017, CYP1A2 −0.013). Uniform averaging gains almost the same (−0.0208), so the gain does not depend on the weight fit. Cause is decorrelation: pooled correlates with `pubchem` at r 0.72–0.88 and with the Monroe members at 0.68–0.86, against ~0.94 among the earlier chemprop variants. **Rank a candidate by its error correlation with the blend, never by its standalone score.**
+
+Limits: Caruana weights come out as equal splits (1/3, 1/4, 1/5) identical across all five rotations, so selection is acting as member choice, not fine weighting. CV is blind to placement, so the 0.021 is untested on the board. 3 pooled seeds disagree more than `pubchem` seeds do (Pearson 0.88–0.95), so the shipped pooled vector is a 3-seed mean.
+
+### 22_pooled_seed_ensemble (2026-10-23) — built, validated, not yet scored
+
+`submissions/22_pooled_seed_ensemble/20261023/`, built by `notebooks/build_pooled_seed_submission.py`. Per-endpoint Caruana over five members, **every blind member a seed mean**: `pubchem` ×5, `tabicl_monroe` ×5, `tabicl_atom_jepa` ×5, pooled ×3, `tabicl_chemeleon` (weight 0 on all endpoints, not fitted; the script asserts this). Weights fitted on all 25 folds of `21`'s single-seed OOF. Placement identical to 17 (CYP1A2/CYP2D6 onto 12's moments, CYP2C9/CYP3A4 onto 05's unplaced). TDI is `14`'s, unchanged. Rank agreement with 17's file 0.94–0.99. Expected CV macro ST-RAE **0.639** (single-seed members, placement-blind) against 0.660 for 17. Passes `submission.check` on both tracks.
+
+### Board record, 22 (live, 2026-10-23) — the pooled model and seed means paid more on the board than in CV
+
+Snapshot `data/leaderboard/20261023/`. Regression macro ST-RAE **0.6209 → 0.5711**, rank 85/257 → **66/252** (CV had predicted 0.660 → 0.639). Per endpoint: CYP1A2 0.5882 → 0.5720, CYP2C9 0.5105 → 0.4249, CYP2D6 0.8411 → 0.8033, CYP3A4 0.5438 → 0.4840. Macro Spearman 0.691 → 0.724 and R² 0.488 → 0.538, so the gain is ordering, not placement (identical to 17). CYP2D6 stays the weak endpoint (Spearman 0.425, best entry 0.582). The extra board gain over CV is not separable between the pooled member, seed means and live-half noise.
+
+### 23_tdi_encoders (2026-10-23) — the regression-side encoder and blend lessons transfer to TDI
+
+TabICL (single-task, PCA 128, 2 estimators, seed 42) on frozen Monroe and Atom-JEPA embeddings, same folds and 0.25 threshold as `13`/`14`, `13`'s OOF reused for the four existing arms. Macro MCC, weights fitted off the held-out repeat:
+
+| arm | CYP3A4 | CYP2D6 | macro |
+|:--|--:|--:|--:|
+| **caruana, 6 arms** | 0.421 | 0.168 | **0.2945** |
+| `tabicl_monroe` | 0.382 | 0.163 | 0.2722 |
+| caruana, `14`'s 4 arms | 0.394 | 0.136 | 0.2650 |
+| `tabicl_singletask` (CheMeleon) | 0.374 | 0.119 | 0.2465 |
+| `tabicl_atom_jepa` | 0.361 | 0.121 | 0.2413 |
+
+Holm-corrected: 6-arm vs 4-arm blend **+0.0278** (CI [0.019, 0.037], p<0.0001); Monroe vs the CheMeleon incumbent +0.0166 (p=0.015); Atom-JEPA vs incumbent −0.0088, not significant, yet it still helps the blend as a decorrelated member (r 0.67–0.74 with the other TabICL arms). The uniform 6-arm average gains the same +0.0278 over the uniform 4-arm, so the gain does not depend on the weight fit. Monroe takes the largest weight (0.27 CYP3A4, 0.32 CYP2D6).
+
+**Monroe's PCBA overlap does not drive it.** 225 challenge compounds appear in Monroe's pretraining corpus; dropping them leaves blend +0.0269 (CI [0.018, 0.036]) and Monroe alone +0.0146 (p=0.036). Two Atom-JEPA conformer failures among the 1,240 TDI compounds outside `16`'s cache were imputed with the mean embedding (`atom_jepa_bad.json`). The pruned 5-arm pool in the output (0.2970) was defined after seeing weights and is descriptive only.
+
+**Expect shrinkage on the board.** `14`'s blend was 0.265 in CV and 0.2028 live.
+
+### 24_tdi_encoders (2026-10-23) — built, validated, not yet scored
+
+`submissions/24_tdi_encoders/20261023/`, built by `notebooks/build_tdi_encoders_submission.py`: `23`'s six-arm blend, every arm refit on 100% of the rows and seed-averaged (TabICL ×5, Chemprop ×3, per-seed blind probabilities in `experiments/24_tdi_seed_fits/`), weights from all 25 folds, threshold 0.25. Regression is `22`'s `activity.csv` unchanged. Label agreement with 17's TDI file 91.1% (CYP3A4) and 85.6% (CYP2D6).
+
 ## Placement (07) — separable from ordering, and where the leaderboard gap is
 
 A contender scored macro ST-RAE **0.4378** against our 0.78 ([blog](https://supercowpowers.github.io/workbench/blogs/cyp_challenge/), [code](https://github.com/SuperCowPowers/workbench/tree/main/ml_pipelines/OpenADMET/cyp)). Most of the gap is not a better model. `src/cyp/placement.py` implements the part reproducible without spending submissions we do not have.
@@ -477,6 +594,8 @@ Hard-won on a completed blind challenge ([repo](https://github.com/adlvdl/pxr_ch
 - A notebook writes diagnostics to `experiments/<notebook_name>/` and submissions to `submissions/<notebook_name>/<date>/`, deriving the name from `Path(__file__).stem`. Both tracks (`activity.csv`, `tdi.csv`) share one dated subfolder. Every submission folder gets a `PROVENANCE.md` recording model, calibration, CV protocol, data snapshot, **and an expected-performance table (per endpoint plus macro) for both tracks** — computed fresh for the exact submitted method/calibration. This is what lets you check the interim reveal against a number instead of a surprise.
 - Save OOF as `oof.parquet` in the experiment directory — every comparison, calibration and ensemble step reads that schema (`cv.oof_frame`).
 - Large purely-derived caches (no training) are gitignored; caches that took model fits are committed. Derived summaries and figures are always committed.
+- **Leaderboard snapshots go to `data/leaderboard/YYYYMMDD/leaderboards.csv`** via `scripts/snapshot_leaderboard.py` (long format: `board` live/interim, `track`, `scope` endpoint/overall, `is_ours`). Filter `board`, not `scope`, for live vs interim. Ranks are only comparable within one snapshot; the field grew 205 → 257 between 2026-09-19 and 2026-10-21.
+- **Submission builders live in `notebooks/build_*.py`** (`build_tdi_ensemble_submission.py`, `build_pool_b_submission.py`, `build_pooled_seed_submission.py`), run as scripts, refuse to overwrite an existing dated folder, and call `submission.check` before writing the provenance. Final-fit seeds are explicit (`graph_models` passes `--pytorch-seed`/`--data-seed` only when a script patches them in, as `19` and `20` do), and seed means are cached under `experiments/19_seed_spread/`.
 
 ## Environment traps on this machine (16 GB Apple Silicon)
 

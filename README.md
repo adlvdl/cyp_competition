@@ -97,7 +97,16 @@ src/cyp/
   metrics.py         local scoring via the official ST-RAE implementation
   submission.py      build + validate the two submission CSVs
   download.py        fetch data into a dated snapshot + diff vs the previous one
-notebooks/           marimo notebooks, one per modelling run (NN_name.py)
+  graph_models.py    Chemprop (single-task, multitarget, pretrained) and CheMeleon embeddings, all via subprocess
+  tabular_models.py  TabICL / TabPFN in isolated child processes
+  encoders.py        frozen Monroe / Atom-JEPA embeddings
+  aux_training.py    auxiliary/public-data label matrices, pretraining CV, pooled multitask CV
+  external.py, chembl.py, tox21.py   public-data downloaders (dated snapshots under data/external/)
+  placement.py       affine placement of predictions and the blind-set moment solve
+  multitask.py       stacked / native / multitarget multitask harnesses with shared folds
+notebooks/           marimo notebooks, one per modelling run (NN_name.py); build_*.py scripts assemble submissions
+scripts/             leaderboard snapshots, Monroe/PCBA overlap audit, contention watcher
+data/leaderboard/    dated snapshots of the public leaderboards
 experiments/<nb>/    diagnostics written by notebook <nb> (OOF predictions, CV summary, ...)
 submissions/<nb>/    submissions written by notebook <nb>, one dated subfolder each, with PROVENANCE.md (incl. expected CV performance, per-endpoint and macro-averaged)
 vendor/              pinned copy of the official tutorial's scoring code
@@ -109,6 +118,19 @@ A notebook's outputs are named after the notebook itself: `notebooks/01_baseline
 `cv.py`, `calibration.py`, `ensemble.py`, `evaluation.py`, `mcs.py` and `fingerprints.py` are ported from the [PXR blind challenge repo](https://github.com/adlvdl/pxr_challenge), adapted to Polars and to CYP's four sparse endpoints. See [PLAN.md](PLAN.md) for what that challenge's retrospectives imply here.
 
 ## Current status
+
+**Latest (2026-10-23).** After 21 notebooks, the best regression model (submission 22) is a per-endpoint Caruana blend of PubChem-pretrained Chemprop, TabICL on frozen Monroe and Atom-JEPA embeddings, and a from-scratch pooled multitask Chemprop trained on challenge plus public data. Each blind-set member is a seed mean. TDI is a Caruana blend of TabICL and three Chemprop variants. Full findings per notebook are in [CLAUDE.md](CLAUDE.md).
+
+| submission | regression macro ST-RAE | TDI macro MCC | status |
+|:--|--:|--:|:--|
+| [12_final_placement](submissions/12_final_placement/20260919/) | 0.6578 (live), 0.6384 (full set) | 0.2111 | scored |
+| [17_regression_ensemble](submissions/17_regression_ensemble/20261020/) | **0.6209** (live) | 0.2028 | scored, rank 85/257 on 2026-10-21 |
+| [22_pooled_seed_ensemble](submissions/22_pooled_seed_ensemble/20261023/) | **0.5711** (live) | 0.2028 (17's) | scored, rank 66/252 on 2026-10-23 |
+| [24_tdi_encoders](submissions/24_tdi_encoders/20261023/) | same as 22 | CV 0.2945 vs 0.2650 | built and validated, **not submitted** |
+
+Scores are from the live leaderboard (half the test set), snapshots in [data/leaderboard/](data/leaderboard/). Ranks are only comparable within one snapshot because the field keeps growing. Cross-validation cannot see placement, so a CV number is not a forecast of the board.
+
+### Baseline (notebook 01)
 
 Validated baseline submissions for **both tracks** exist at [submissions/01_baseline/20260909/](submissions/01_baseline/20260909/), produced by [notebooks/01_baseline.py](notebooks/01_baseline.py).
 
