@@ -1,0 +1,25 @@
+track,effect,candidate,vs,endpoint,diff,ci_low,ci_high,p_value,folds_candidate_better
+regression,route,tabicl_monroe_sdf_etkdg,tabicl_monroe_etkdg,CYP1A2_pIC50_direct_inhibition,-0.0038280290442526833,-0.011703121378468496,0.004254666970751853,0.3612,14
+regression,route,tabicl_monroe_sdf_etkdg,tabicl_monroe_etkdg,CYP2C9_pIC50_direct_inhibition,0.002875338490338246,-0.00966275853567707,0.015537984720823853,0.6756,10
+regression,route,tabicl_monroe_sdf_etkdg,tabicl_monroe_etkdg,CYP2D6_pIC50_direct_inhibition,-0.003971054293195695,-0.010583109390089773,0.002476755601254532,0.2326,14
+regression,route,tabicl_monroe_sdf_etkdg,tabicl_monroe_etkdg,CYP3A4_pIC50_direct_inhibition,-0.005392945735550756,-0.012331552825433032,0.001384299791238936,0.126,15
+regression,stereo averaging,tabicl_monroe_sdf_etkdg_stereo,tabicl_monroe_sdf_etkdg,CYP1A2_pIC50_direct_inhibition,0.002254323078349163,-0.0025364233901536636,0.007445643581934683,0.3694,11
+regression,stereo averaging,tabicl_monroe_sdf_etkdg_stereo,tabicl_monroe_sdf_etkdg,CYP2C9_pIC50_direct_inhibition,-0.008267662437845385,-0.014431066401594259,-0.0018436930796428743,0.0136,19
+regression,stereo averaging,tabicl_monroe_sdf_etkdg_stereo,tabicl_monroe_sdf_etkdg,CYP2D6_pIC50_direct_inhibition,-0.000443007917419318,-0.006103017901877277,0.005346294450116203,0.8646,14
+regression,stereo averaging,tabicl_monroe_sdf_etkdg_stereo,tabicl_monroe_sdf_etkdg,CYP3A4_pIC50_direct_inhibition,-0.001895110361762502,-0.00569095942977621,0.0017558160582687645,0.3074,14
+regression,xTB geometry,tabicl_monroe_shorku_qm,tabicl_monroe_sdf_etkdg_stereo,CYP1A2_pIC50_direct_inhibition,0.001022532726069021,-0.004181537775178203,0.006363078083182694,0.711,13
+regression,xTB geometry,tabicl_monroe_shorku_qm,tabicl_monroe_sdf_etkdg_stereo,CYP2C9_pIC50_direct_inhibition,0.0006463317545626079,-0.005050514931811466,0.006558639978028424,0.843,12
+regression,xTB geometry,tabicl_monroe_shorku_qm,tabicl_monroe_sdf_etkdg_stereo,CYP2D6_pIC50_direct_inhibition,-0.0024879382130410387,-0.0072665345821553325,0.0020903196794455244,0.298,17
+regression,xTB geometry,tabicl_monroe_shorku_qm,tabicl_monroe_sdf_etkdg_stereo,CYP3A4_pIC50_direct_inhibition,-0.0025897232063286425,-0.006275357843483305,0.001135633095436771,0.1772,15
+regression,total,tabicl_monroe_shorku_qm,tabicl_monroe_etkdg,CYP1A2_pIC50_direct_inhibition,-0.0005511732398344993,-0.009487998018036209,0.008959839589287437,0.9024,15
+regression,total,tabicl_monroe_shorku_qm,tabicl_monroe_etkdg,CYP2C9_pIC50_direct_inhibition,-0.00474599219294453,-0.017102033983679467,0.008076643407131434,0.4254,15
+regression,total,tabicl_monroe_shorku_qm,tabicl_monroe_etkdg,CYP2D6_pIC50_direct_inhibition,-0.006902000423656051,-0.01447948174100363,0.00031769933301901087,0.0608,17
+regression,total,tabicl_monroe_shorku_qm,tabicl_monroe_etkdg,CYP3A4_pIC50_direct_inhibition,-0.0098777793036419,-0.017648850564929243,-0.0020805546668928,0.0112,15
+tdi,route,tabicl_monroe_sdf_etkdg,tabicl_monroe_etkdg,CYP2D6_is_TDI,-0.01724131420910818,-0.03631747952301809,0.002939227239947934,0.0948,8
+tdi,route,tabicl_monroe_sdf_etkdg,tabicl_monroe_etkdg,CYP3A4_is_TDI,0.002641243744097719,-0.009265283071499835,0.014805414300189652,0.692,11
+tdi,stereo averaging,tabicl_monroe_sdf_etkdg_stereo,tabicl_monroe_sdf_etkdg,CYP2D6_is_TDI,0.005598126575077808,-0.011333650241191824,0.023375243865916124,0.5284,14
+tdi,stereo averaging,tabicl_monroe_sdf_etkdg_stereo,tabicl_monroe_sdf_etkdg,CYP3A4_is_TDI,-0.005853067096018552,-0.014578061562242445,0.0028475232261079525,0.195,11
+tdi,xTB geometry,tabicl_monroe_shorku_qm,tabicl_monroe_sdf_etkdg_stereo,CYP2D6_is_TDI,0.01514252239011198,-0.0026508917193532005,0.033554388926139364,0.1002,15
+tdi,xTB geometry,tabicl_monroe_shorku_qm,tabicl_monroe_sdf_etkdg_stereo,CYP3A4_is_TDI,-0.0075787193422061595,-0.014957224490943367,-0.00022529055284220908,0.045,8
+tdi,total,tabicl_monroe_shorku_qm,tabicl_monroe_etkdg,CYP2D6_is_TDI,0.0034993347560816047,-0.01439670282321064,0.022430737194765828,0.7296,12
+tdi,total,tabicl_monroe_shorku_qm,tabicl_monroe_etkdg,CYP3A4_is_TDI,-0.010790542694126992,-0.021742423850581248,0.0000359473481092975,0.051,9

@@ -362,6 +362,49 @@ Holm-corrected: 6-arm vs 4-arm blend **+0.0278** (CI [0.019, 0.037], p<0.0001); 
 
 `submissions/24_tdi_encoders/20261023/`, built by `notebooks/build_tdi_encoders_submission.py`: `23`'s six-arm blend, every arm refit on 100% of the rows and seed-averaged (TabICL ×5, Chemprop ×3, per-seed blind probabilities in `experiments/24_tdi_seed_fits/`), weights from all 25 folds, threshold 0.25. Regression is `22`'s `activity.csv` unchanged. Label agreement with 17's TDI file 91.1% (CYP3A4) and 85.6% (CYP2D6).
 
+### 25_xtb_conformer_probe (2026-10-24) — Monroe barely sees geometry (the full CV in `26` confirms it)
+
+Third-party data: Shorku's (Oleg Gromov) xTB conformer ensembles, MIT, attributed in README's *Third-party data*; `cyp.shorku_qm` fetches and reads it. Coverage: all 750 blind compounds, 4,881 of 4,905 training compounds; 40% match only by InChIKey skeleton (a different tautomer, stereoisomer or charge form), resolved to the lowest-xTB-energy form. The `.xyz` atom order equals RDKit's `AddHs(MolFromSmiles(SMILES))` order, checked on 5,249 conformers with 0 failures.
+
+`scripts/probe_xtb_monroe.py`, 298 compounds (148 train, 150 blind), distances in units of the median distance between two different molecules:
+
+| comparison | median | p90 |
+|:--|--:|--:|
+| ETKDG seed 1 vs seed 2 | 0.035 | 0.051 |
+| lowest-energy xTB vs ETKDG | 0.039 | 0.059 |
+| Boltzmann top-5 vs lowest-energy xTB | 0.008 | — |
+| `16`'s cached embedding vs ETKDG, same molecule | **0.398** | 0.54 |
+
+**Swapping in xTB geometry moves Monroe's embedding 1.1x as far as re-rolling the ETKDG seed, and both are under 4% of the gap between molecules.** The pre-registered rule (seed noise ≥0.15 or shift ≥1.5x noise) did not fire. Monroe's embedding is set by the graph, not the coordinates. The 8 scalar QM descriptors had partial Spearman ≤0.05 on CYP2D6 after heavy atoms/logP/TPSA (max 0.23, volume on CYP1A2), below what `10` showed a model ignores.
+
+**Side finding, not pursued:** Monroe's InChI round-trip route (`encoders.embed`) and its SDF route (`encoders.embed_monroe_conformers`) give embeddings 0.40 apart for the same molecule, 10x the geometry effect, exact-SMILES matches included. Graph construction differs between the two routes. Which one is better for this task is unmeasured.
+
+### 26_monroe_conformers (2026-10-24) — xTB geometry adds nothing measurable; a small regression gain comes from route and stereo
+
+Four arms, same readout as `16`/`23` (TabICL single-task, PCA 128, 2 estimators, seed 42), shared folds, 25 folds per track. A is `16`'s/`23`'s cached OOF (asserted aligned; A reproduces `16`'s 0.7020 exactly). B, C and D use the coordinate route (`encoders.embed_monroe_conformers`). C and D average over every upstream stereoisomer consistent with our SMILES (`shorku_qm.structure_sets`: 3,725 exact, 2,357 compounds expanding to 5,858 isomers, 36 tautomer fallbacks, 27 absent and given B's vector). D is the Boltzmann mean over 82,056 xTB conformers per isomer. Flat-2D conformer fallbacks: 2 compounds in B, 2 isomers in C.
+
+| arm | macro ST-RAE | macro MCC @0.25 |
+|:--|--:|--:|
+| A `tabicl_monroe_etkdg` (InChI route) | 0.7020 | 0.2735 |
+| B `tabicl_monroe_sdf_etkdg` (coordinate route) | 0.6994 | 0.2662 |
+| C `..._sdf_etkdg_stereo` (+ stereo averaging) | 0.6973 | 0.2660 |
+| D `tabicl_monroe_shorku_qm` (+ xTB geometry) | **0.6965** | 0.2698 |
+
+Fold-level paired bootstrap, Holm over four effects per track:
+
+| effect | regression diff | p | TDI diff | p |
+|:--|--:|--:|--:|--:|
+| route (B−A) | −0.0026 | 0.21 | −0.0073 (worse) | 0.25 |
+| stereo averaging (C−B) | −0.0021 | 0.11 | −0.0001 | 0.99 |
+| **xTB geometry (D−C)** | **−0.0009** | **0.47** | +0.0038 | 0.52 |
+| total (D−A) | **−0.0055** | 0.0104, **Holm-significant** | −0.0036 (worse) | 0.51 |
+
+**The xTB geometry is the smallest of the three effects on regression and not significant on either track.** The regression total is Holm-significant but small (CI [−0.0097, −0.0014], 16/25 folds), the size of `19`'s expected seed-mean gain. It accumulates three small same-direction steps, of which geometry contributes about 15%. The route and stereo steps need no xTB data: stereo enumeration is doable with RDKit. TDI shows nothing. The only per-endpoint signal is CYP3A4 regression (−0.0099, p=0.011, not family-corrected).
+
+**The route changes predictions more than geometry does.** OOF Pearson r between A and the coordinate-route arms is 0.89–0.96 (regression) and 0.75–0.87 (TDI). Among B/C/D it is 0.96–0.99. Whether D's partial decorrelation from A is worth anything in the shipped blends is unmeasured.
+
+Do not rerun this with other conformer combinations. `25` measured Boltzmann vs lowest-energy at 0.008 of the between-molecule distance, so the combination rule cannot move the result.
+
 ## Placement (07) — separable from ordering, and where the leaderboard gap is
 
 A contender scored macro ST-RAE **0.4378** against our 0.78 ([blog](https://supercowpowers.github.io/workbench/blogs/cyp_challenge/), [code](https://github.com/SuperCowPowers/workbench/tree/main/ml_pipelines/OpenADMET/cyp)). Most of the gap is not a better model. `src/cyp/placement.py` implements the part reproducible without spending submissions we do not have.

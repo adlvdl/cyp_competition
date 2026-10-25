@@ -1,0 +1,9 @@
+track,effect,candidate,vs,endpoint,diff,ci_low,ci_high,p_value,folds_candidate_better,holm_threshold,holm_significant
+regression,total,tabicl_monroe_shorku_qm,tabicl_monroe_etkdg,macro,-0.005519236290019238,-0.009667661239720028,-0.0013928477810612183,0.0104,16,0.0125,true
+regression,stereo averaging,tabicl_monroe_sdf_etkdg_stereo,tabicl_monroe_sdf_etkdg,macro,-0.0020878644096694998,-0.004570183925109285,0.0004606637461996939,0.11,15,0.016666666666666666,false
+regression,route,tabicl_monroe_sdf_etkdg,tabicl_monroe_etkdg,macro,-0.00257917264566522,-0.006461089081086052,0.0015648423820242814,0.2122,16,0.025,false
+regression,xTB geometry,tabicl_monroe_shorku_qm,tabicl_monroe_sdf_etkdg_stereo,macro,-0.0008521992346845187,-0.0031349050980848596,0.001514324632878699,0.4686,16,0.05,false
+tdi,route,tabicl_monroe_sdf_etkdg,tabicl_monroe_etkdg,macro,-0.007300035232505233,-0.019373507310076078,0.005242349458487133,0.2454,10,0.0125,false
+tdi,total,tabicl_monroe_shorku_qm,tabicl_monroe_etkdg,macro,-0.0036456039690226905,-0.014675325182045491,0.007558077050874444,0.5116,10,0.016666666666666666,false
+tdi,xTB geometry,tabicl_monroe_shorku_qm,tabicl_monroe_sdf_etkdg_stereo,macro,0.0037819015239529174,-0.0069512824139467185,0.015135281395078963,0.5224,11,0.025,false
+tdi,stereo averaging,tabicl_monroe_sdf_etkdg_stereo,tabicl_monroe_sdf_etkdg,macro,-0.00012747026047037479,-0.009566115972203776,0.009546609107476612,0.988,12,0.05,false

@@ -1,0 +1,5 @@
+rule,compounds,structures,flat_fallback_B,flat_fallback_C,xtb_conformers
+,27,27,0,0,82056
+tautomer,36,36,0,0,82056
+stereo,2357,5858,0,0,82056
+exact,3725,3725,0,0,82056

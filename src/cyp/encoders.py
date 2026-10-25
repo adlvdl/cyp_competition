@@ -134,6 +134,133 @@ if __name__ == "__main__":
 """
 
 
+# Same checkpoint loading as _MONROE_SCRIPT, but the graph is built from a supplied
+# conformer instead of Monroe's own InChI round-trip and random ETKDG embedding. The
+# graph builder is the one Monroe uses for its SDF route (`build_mol_from_sdf`), so
+# only the coordinates differ.
+_MONROE_COORDS_SCRIPT = """
+import sys
+import numpy as np
+
+def main(sdf_file, out_file, ckpt_dir, batch_size):
+    import torch
+    from rdkit import Chem
+    from torch_geometric.data import Batch
+    from monroe.eval.embed import to_pyg
+    from monroe.model.featurizer import build_from_mol_and_coords
+    from monroe.model.ckpt import _build_encoder, _load_config_and_weights, _resolve_ckpt_dir
+
+    hp, state = _load_config_and_weights(
+        _resolve_ckpt_dir(ckpt_dir), device=torch.device("cpu"), use_ema=False
+    )
+    encoder = _build_encoder(hp)
+    result = torch.nn.ModuleDict({"encoder": encoder}).load_state_dict(state, strict=False)
+    heads = ("decoders.", "dataset_heads.")
+    stray = [k for k in result.unexpected_keys if not k.startswith(heads)]
+    if result.missing_keys or stray:
+        raise RuntimeError(f"Monroe checkpoint mismatch: {result.missing_keys[:5]} {stray[:5]}")
+    encoder.eval()
+
+    graphs = []
+    for i, mol in enumerate(Chem.SDMolSupplier(sdf_file, removeHs=False)):
+        if mol is None:
+            raise RuntimeError(f"SDF record {i} could not be read")
+        Chem.AssignStereochemistry(mol, cleanIt=True, force=True)
+        pos = np.asarray(mol.GetConformer().GetPositions(), dtype=np.float32)
+        graphs.append(build_from_mol_and_coords(
+            mol, pos_rdkit=pos, stereo_augmentation=True, symmetrize=True
+        ))
+
+    out = []
+    with torch.no_grad():
+        for start in range(0, len(graphs), batch_size):
+            chunk = graphs[start:start + batch_size]
+            emb, _ = encoder(Batch.from_data_list([to_pyg(g) for g in chunk]))
+            out.append(emb.cpu().numpy())
+            done = min(start + batch_size, len(graphs))
+            print(f"{done}/{len(graphs)}", file=sys.stderr, flush=True)
+    np.save(out_file, np.concatenate(out).astype(np.float32))
+
+if __name__ == "__main__":
+    main(sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4]))
+"""
+
+
+def monroe_etkdg_conformer(smiles: str, seed: int):
+    """One conformer by Monroe's own `predict_structure` recipe, with an explicit seed.
+
+    ETKDGv3 with random coordinates, then MMFF94s, UFF where MMFF has no parameters.
+    Monroe itself never seeds, so its embeddings are not reproducible; this is. Raises
+    `ValueError` if embedding fails, which the caller handles (Monroe's own answer is a
+    flat 2D layout, `monroe_conformer_or_flat`).
+    """
+    from rdkit import Chem
+    from rdkit.Chem import rdDistGeom, rdForceFieldHelpers
+
+    mol = Chem.AddHs(Chem.MolFromSmiles(smiles))
+    params = rdDistGeom.ETKDGv3()
+    params.enforceChirality = True
+    params.useRandomCoords = True
+    params.maxIterations = 500
+    params.randomSeed = seed
+    if rdDistGeom.EmbedMolecule(mol, params) < 0:
+        raise ValueError(f"ETKDG failed for {smiles}")
+    props = rdForceFieldHelpers.MMFFGetMoleculeProperties(mol, "MMFF94s")
+    if props is not None:
+        rdForceFieldHelpers.MMFFGetMoleculeForceField(mol, props).Minimize(maxIts=200)
+    else:
+        rdForceFieldHelpers.UFFOptimizeMolecule(mol, maxIters=200)
+    return mol
+
+
+def monroe_conformer_or_flat(smiles: str, seed: int):
+    """`monroe_etkdg_conformer`, retried on three seeds, then Monroe's flat 2D fallback.
+
+    Returns `(mol, is_flat)` so the caller can count fallbacks rather than hide them.
+    """
+    from rdkit import Chem
+    from rdkit.Chem import AllChem
+
+    for attempt in range(3):
+        try:
+            return monroe_etkdg_conformer(smiles, seed + 1000 * attempt), False
+        except ValueError:
+            continue
+    mol = Chem.AddHs(Chem.MolFromSmiles(smiles))
+    AllChem.Compute2DCoords(mol)
+    return mol, True
+
+
+def embed_monroe_conformers(mols: list, batch_size: int = 16) -> np.ndarray:
+    """Monroe embeddings of molecules that already carry a 3D conformer.
+
+    Each molecule must have explicit hydrogens and one conformer; row i of the result is
+    `mols[i]`. Used to feed externally optimised geometries (`cyp.shorku_qm`) to Monroe
+    in place of its own random ETKDG conformer. Runs in a child process like `embed`.
+    """
+    from rdkit import Chem
+
+    work = Path(tempfile.mkdtemp(prefix="cyp_monroe_coords_"))
+    sdf_file, out_file, script = work / "mols.sdf", work / "emb.npy", work / "run.py"
+    with Chem.SDWriter(str(sdf_file)) as writer:
+        for mol in mols:
+            writer.write(mol)
+    script.write_text(_MONROE_COORDS_SCRIPT)
+    cmd = [
+        sys.executable, str(script), str(sdf_file), str(out_file),
+        str(fetch_monroe_weights()), str(batch_size),
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"monroe coords subprocess failed (exit {result.returncode}):\n{result.stderr[-2000:]}"
+        )
+    emb = np.load(out_file)
+    if emb.shape[0] != len(mols) or not np.isfinite(emb).all():
+        raise RuntimeError(f"monroe coords: bad output shape {emb.shape} for {len(mols)} mols")
+    return emb
+
+
 def fetch_monroe_weights(dest: Path = MONROE_DIR) -> Path:
     """Download Monroe's checkpoint (config + 300 MB weights) and verify its hash.
 

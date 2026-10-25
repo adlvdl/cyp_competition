@@ -257,3 +257,7 @@ experiments/**/cache/a3_descriptors_*.parquet
 
 # Encoder weights (Monroe 300 MB LFS file) and embedding caches
 .encoders/
+
+# Shorku xTB geometries: 134 MB, over GitHub's file limit. `python -m cyp.shorku_qm`
+# re-fetches it at the pinned commit and checks its hash.
+data/external/shorku_qm/*/geoms.zip

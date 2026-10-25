@@ -56,6 +56,10 @@ Filter per-endpoint with `data.labelled_subset(df, endpoint)`. Note the TDI clas
 
 The single-concentration screen covers far more compounds than any dose-response table and is the main source of auxiliary signal for compounds that never got a curve.
 
+### Third-party data
+
+**xTB conformer ensembles and semi-empirical descriptors** for every challenge compound, published by Oleg Gromov (challenge user `Shorku`) in [Shorku/OpenADMET_Blind_Challenge_Predicting_CYP_Inhibition](https://github.com/Shorku/OpenADMET_Blind_Challenge_Predicting_CYP_Inhibition/tree/a98faaf41e0630046d0c6f11bd11b6cfe55687fc/data) under the MIT licence (Copyright (c) 2026 Oleg Gromov), pinned at commit `a98faaf`. Method: O. Gromov, *J. Chem. Theory Comput.* 2025, [doi:10.1021/acs.jctc.5c00425](https://doi.org/10.1021/acs.jctc.5c00425). 12,037 structures, 102,624 conformers. `python -m cyp.shorku_qm` fetches it to `data/external/shorku_qm/YYYYMMDD/` (`geoms.zip`, 134 MB, is gitignored and hash-checked on download). Used by `scripts/probe_xtb_monroe.py` and `notebooks/26_monroe_conformers.py`.
+
 ## Data snapshots
 
 OpenADMET has amended the dataset mid-challenge, so downloads are kept as dated snapshots rather than overwritten:
@@ -102,6 +106,7 @@ src/cyp/
   encoders.py        frozen Monroe / Atom-JEPA embeddings
   aux_training.py    auxiliary/public-data label matrices, pretraining CV, pooled multitask CV
   external.py, chembl.py, tox21.py   public-data downloaders (dated snapshots under data/external/)
+  shorku_qm.py       third-party xTB conformer ensembles (data/external/shorku_qm/), see Data
   placement.py       affine placement of predictions and the blind-set moment solve
   multitask.py       stacked / native / multitarget multitask harnesses with shared folds
 notebooks/           marimo notebooks, one per modelling run (NN_name.py); build_*.py scripts assemble submissions
