@@ -1,0 +1,14 @@
+scope,metric,candidate,vs,diff,ci_low,ci_high,p_value,n_folds,comparison,threshold,significant
+macro,st_rae,interval,mae,-0.0228763000218061,-0.028781996933013945,-0.017066222420265197,0.0,25,interval vs mae,0.025,true
+macro,rho,interval,mae,0.001546361382571777,-0.0029053247581867347,0.0064771335359723224,0.5464,25,interval vs mae,0.025,true
+CYP1A2_pIC50_direct_inhibition,st_rae,interval,mae,-0.01624522146387756,-0.026837635601579788,-0.006064156692667196,0.0016,25,interval vs mae,0.025,true
+CYP2C9_pIC50_direct_inhibition,st_rae,interval,mae,-0.034875948745455576,-0.04672617746290999,-0.023716266829081126,0.0,25,interval vs mae,0.025,true
+CYP2D6_pIC50_direct_inhibition,st_rae,interval,mae,-0.0014460700343010614,-0.010479963242456787,0.007086758791512563,0.7662,25,interval vs mae,0.025,true
+CYP3A4_pIC50_direct_inhibition,st_rae,interval,mae,-0.03893795984359017,-0.047565877615085954,-0.030536979630585548,0.0,25,interval vs mae,0.025,true
+macro,st_rae,interval_tb,mae,-0.020184409061584637,-0.025706106800815285,-0.014935442334444285,0.0,25,interval_tb vs mae,0.05,true
+macro,rho,interval_tb,mae,0.0033506783835706953,-0.0006561258165434422,0.007532881887615817,0.1048,25,interval_tb vs mae,0.05,true
+CYP1A2_pIC50_direct_inhibition,st_rae,interval_tb,mae,-0.014116535420841316,-0.022126935176024886,-0.006597857697189921,0.0004,25,interval_tb vs mae,0.05,true
+CYP2C9_pIC50_direct_inhibition,st_rae,interval_tb,mae,-0.02629686647318521,-0.03888464681148678,-0.014834309983164377,0.0,25,interval_tb vs mae,0.05,true
+CYP2D6_pIC50_direct_inhibition,st_rae,interval_tb,mae,-0.0041703802163148,-0.012656886344530533,0.004010593182351753,0.3292,25,interval_tb vs mae,0.05,true
+CYP3A4_pIC50_direct_inhibition,st_rae,interval_tb,mae,-0.03615385413599721,-0.045794582359878294,-0.027078081906797186,0.0,25,interval_tb vs mae,0.05,true
+macro,st_rae,interval_tb,interval,0.0026918909602214615,-0.0006107264482308447,0.00596663580800652,0.115,25,interval_tb vs interval,,

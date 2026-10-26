@@ -241,6 +241,18 @@ The live leaderboard scores only half the test set (split by chemical series); t
 - An **Innovation in ML Award** is judged separately from leaderboard rank — novel architectures, creative data usage, and uncertainty quantification all count.
 - Open-sourcing your code earns community recognition.
 
+## Ideas from other entrants
+
+On 2026-10-25 we read the public model reports linked from the live leaderboard (40 distinct links, 39 reachable) and took three ideas from them. Ideas only: none of their code, data or checkpoints is used here. We did not use the pretrained checkpoints in jeremy's repo because it carries no licence.
+
+| idea | taken from | tested in |
+|:--|:--|:--|
+| Train TDI only on compounds that have a direct-inhibition arm. 1,249 of the 3,584 labelled CYP3A4 rows have none and are all negative, which dilutes the positive rate from 32.7% to 21.3% against a blind set where every compound has both arms. | JacksonBurns, [NOTES.md](https://github.com/JacksonBurns/cyp-challenge/blob/86213d34157eeeea7635b6943c3f8c3798548514/NOTES.md) (sec. 23). We verified the counts on our own snapshot. | [27](notebooks/27_tdi_prior_and_gate.py), [29](notebooks/29_tdi_blend_a1.py): +0.033 macro MCC on one readout, +0.030 inside the Caruana blend (CV only) |
+| Feed TDI models a leak-free predicted direct pIC50 as a gate feature. | Nomad-link-id (Igor Eduardo, Cortexa Social), [methods report](https://huggingface.co/Nomad-link-id/openadmet-cyp-methods) | [27](notebooks/27_tdi_prior_and_gate.py): +0.015, adds nothing on top of the rule above |
+| Train against the credible interval (zero loss inside `[conf_low, conf_high]`) instead of the point estimate, matching ST-RAE. | mokhalaf22, [REPORT.md](https://github.com/mokhalaf22/openadmet-cyp-public/blob/main/REPORT.md); doctawho42 (Lizard Wizard), [method report](https://github.com/doctawho42/CYPChallenge/blob/main/docs/method_report.md) | [28](notebooks/28_interval_loss.py), loss in `src/cyp/interval_launcher.py`: macro ST-RAE −0.023 on from-scratch multitask chemprop, Spearman unchanged. [30](notebooks/30_interval_loss_shipped.py) on the shipped models: `pubchem` −0.046 vs its MSE config and −0.027 vs L1 (25 folds, Holm-significant), pooled model −0.037 vs L1 (5 folds, CYP2D6 worse), Spearman unchanged in both |
+
+Also read and not adopted: [jeremy](https://github.com/jeremycheminf/openadmet_scripts/tree/main/CYP_Challenge) (closest to our stack, but its edge on TDI is an encoder pretrained on a corpus we cannot reuse), [stir_bar](https://github.com/lachrymator/openadmet-cyp-challenge-public) (pulls near-neighbours of the blind structures into training; JacksonBurns measured +0.0002 from the same move), [KNIMEST](https://github.com/KNIMEST/openadmet-cyp-model-report) (its 0.81 to 0.60 jump came from in-sample predicted log2FC, chosen after seeing the blind score, and moved R² far more than Spearman).
+
 ## Links
 
 - [Challenge Space](https://huggingface.co/spaces/openadmet/cyp-challenge) · [Dataset](https://huggingface.co/datasets/openadmet/cyp-challenge-train-test)

@@ -405,6 +405,89 @@ Fold-level paired bootstrap, Holm over four effects per track:
 
 Do not rerun this with other conformer combinations. `25` measured Boltzmann vs lowest-energy at 0.008 of the between-molecule distance, so the combination rule cannot move the result.
 
+### 27_tdi_prior_and_gate / 29_tdi_blend_a1 (2026-10-25) — train TDI only on rows that have a direct arm
+
+Ideas taken from public reports on the live leaderboard, credited in README's *Ideas from other entrants*. **1,249 of the 3,584 labelled CYP3A4 TDI rows have no direct-inhibition arm and are all negative** (verified on snapshot 20261020): the positive rate is 21.3% overall but **32.7% among rows with both arms**, which is what every blind compound has. CYP2D6 has only 4 such rows. `data.tdi_training_frame` still returns all of them; the notebooks apply the rule (**A1**) themselves. Scored on both-arms rows only, so absolute MCCs are lower than `13`/`14`/`23` and not comparable to them. Threshold chosen on four outer repeats, applied to the fifth.
+
+TabICL single-task on frozen Monroe, 25 folds (`27`; control reproduces `23`'s arm at r=0.998):
+
+| arm | macro MCC | CYP3A4 | CYP2D6 | vs control |
+|:--|--:|--:|--:|:--|
+| ctl (all rows) | 0.2218 | 0.290 | 0.153 | — |
+| **a1** (both-arms rows only) | **0.2543** | 0.351 | 0.158 | **+0.0326**, CI [0.019, 0.046], Holm-sig |
+| a2 (+ predicted direct pIC50 as a feature) | 0.2371 | 0.312 | 0.162 | +0.0153, p=0.026, marginal (p=0.066 at fixed 0.25) |
+| a12 (both) | 0.2520 | 0.357 | 0.147 | not better than a1 (−0.0024, p=0.67) |
+
+**A1 is a CYP3A4 effect** (+0.060; CYP2D6 flat) and moves the optimal CYP3A4 threshold from 0.27 to 0.35, as the corrected prior predicts. **A2** (Nomad-link-id's idea: leak-free inner-fold predicted direct pIC50 as one feature) adds a little alone and nothing on top of A1. It is a gate feature, not the shift difference `13` closed.
+
+`29` rebuilds `23`'s six-arm Caruana blend with the three TabICL members refit under A1; the three Chemprop members are `13`'s OOF unchanged, so the pool is mixed and the gain a **lower bound** on a full A1 rebuild. Weights and a grid-best threshold both fitted off the held-out repeat:
+
+| blend | CYP3A4 | CYP2D6 | macro MCC |
+|:--|--:|--:|--:|
+| **Caruana, A1 pool** | 0.363 | 0.179 | **0.2712** |
+| Caruana, `23`'s pool | 0.321 | 0.161 | 0.2412 |
+
+**+0.0301** (CI [0.019, 0.041], p<0.0001, Holm-sig); uniform averaging gains +0.0271, so it does not depend on the weight fit. CYP2D6's +0.0185 is significant for Caruana only, and with 4 rows dropped it is not an A1 effect. Fold-level intervals (`evaluation.paired_fold_bootstrap`) are anti-conservative. CV only: no submission has been built from the A1 pool, and `14`/`23` both shrank on the board.
+
+### 28_interval_loss (2026-10-25) — training chemprop against the credible interval
+
+ST-RAE is zero inside `[conf_low, conf_high]`, so the exact training analogue is `relu(lo - pred) + relu(pred - hi)`. Taken from the mokhalaf22 and doctawho42 reports (README). We had only ever trained on the point estimate. Chemprop's CLI has no interval loss and the training file has no bounds, so `src/cyp/interval_launcher.py` registers `interval-mae` inside the chemprop subprocess and rebuilds each band from its own pIC50 with an isotonic lookup (`interval_loss.band_table`, R² 0.84 to 0.98). `interval_loss.write_shim` writes the executable that `graph_models.CHEMPROP_BIN` is pointed at, the same patch pattern as `19`/`20`. Valid for **from-scratch runs only**: the launcher recomputes the training-file target mean and std, and a `--checkpoint` run swaps in the checkpoint's own scaler.
+
+From-scratch multitask chemprop, 50 epochs, shared folds, same torch/data seed, 25 folds:
+
+| arm | macro ST-RAE | macro Spearman |
+|:--|--:|--:|
+| mae (control) | 0.7122 | 0.5950 |
+| **interval** | **0.6893** | 0.5966 |
+| interval_tb (+ 0.1 L1) | 0.6920 | 0.5984 |
+
+**interval vs mae: −0.0229**, CI [−0.029, −0.017], Holm-sig. Per endpoint CYP3A4 −0.039, CYP2C9 −0.035, CYP1A2 −0.016, **CYP2D6 −0.001 (p=0.77)**. **Spearman does not move (+0.0015, p=0.55): the gain is in position relative to the bands, not ordering.** The tiebreak variant is no better (+0.0027 vs pure, p=0.12). The control is L1, not `03`'s default MSE, so this isolates the interval from L1-vs-L2.
+
+**Not yet shown on anything that ships.** `pubchem` needs the checkpoint scaler read; the pooled model has 17 heads and the lookup covers only the 4 scored ones. CV cannot see placement, and the shipped submissions already apply an affine placement, so some of this gain may overlap with it.
+
+### 30_interval_loss_shipped (2026-10-26) — the interval loss on `pubchem` and the pooled model
+
+`28` left open whether the loss survives on the two models that ship. The launcher now handles both: under `--checkpoint` it reads the checkpoint's own target scaler, and it patches `MPNN.load_from_file` so `--loss-function` takes effect (chemprop **silently ignores it on a fine-tune**, so an "interval" `pubchem` run would otherwise have been an MSE run; pinned in `tests/test_interval_loss.py`). Heads without a band-table entry (the pooled model's 13 auxiliary and public heads) train on plain L1. Same pretrain checkpoint, shared folds, seeds pinned.
+
+`pubchem`, 25 folds, macro ST-RAE (`mse` is 05's shipped config):
+
+| arm | macro ST-RAE | macro Spearman |
+|:--|--:|--:|
+| **interval** | **0.6635** | 0.6155 |
+| mae | 0.6900 | 0.6166 |
+| mse | 0.7093 | 0.6170 |
+
+**interval vs mse −0.0458** (CI [−0.054, −0.038]), significant on all four endpoints (CYP2D6 −0.064, CYP1A2 −0.044, CYP3A4 −0.041, CYP2C9 −0.035). **interval vs mae −0.0265**, Holm-significant on CYP1A2, CYP2C9, CYP3A4 and **flat on CYP2D6 (−0.001, p=0.71)**. **mae vs mse −0.0193**, all of it CYP2D6 (−0.062). So about half the gain is L1 over L2 (CYP2D6 only) and half is the interval itself (the other three). Spearman does not move (−0.0015, p=0.50): the gain is position relative to the bands, not ordering. Fold-level intervals are anti-conservative.
+
+Pooled model, folds 0 to 4 only (about 56 min per fold awake), control is `20`'s cached MAE OOF and **not seed-matched**: macro 0.6971 vs 0.7346, **−0.0374**, wins 5/5 folds, Spearman unchanged. CYP2C9 −0.073, CYP3A4 −0.057, CYP1A2 −0.046, **CYP2D6 +0.026 (worse)**, untested for significance. Thin evidence: read the direction, not the size.
+
+**Not shown: the gain inside the Caruana blend**, and CV is blind to placement, which the shipped submissions already apply.
+
+**Environment trap: an idle-sleeping Mac pauses a long job.** The pooled run took 3h07 for fold 1 against 56 min for fold 0 because the machine slept repeatedly (66 min of CPU in 194 min of wall time; the `pmset -g log` Sleep/DarkWake entries show it). No thermal or contention signal. Start long runs under `caffeinate -ims -w <pid>`.
+
+### 31b_interval_blend_check (2026-10-26) — the interval gain survives blending
+
+Trains nothing. `22`'s blend (its equal-split weights, fitted on the MAE members) with members swapped for `30`'s interval OOF; the baseline reproduces `22`'s expected 0.639.
+
+| swap | folds | baseline | candidate | diff | CI |
+|:--|--:|--:|--:|--:|:--|
+| `pubchem` only | 25 | 0.6391 | 0.6231 | **−0.0159** | [−0.0183, −0.0135], every endpoint |
+| `pubchem` + pooled (CYP2D6 keeps MAE) | 5 | 0.6345 | 0.6125 | **−0.0221** | [−0.0313, −0.0109] |
+
+About 60% of the standalone `pubchem` gain (−0.0265 vs MAE) survives in the blend, which is the usual shrinkage when members overlap. In the 5-fold row CYP2C9 (−0.034) and CYP3A4 (−0.035) carry it; CYP1A2 and CYP2D6 are not significant there. `pubchem` seeds differ between `05` and `30` (a 0.007 macro seed difference on the `mse` arm), so a little of the first row is noise.
+
+**Affine placement onto the shipped moments erases about 85% of this gain.** Re-scoring the `pubchem`-swapped OOF blend after mapping each endpoint onto the baseline blend's mean and sd (what `17`/`22` do to the blind vector) leaves −0.0023 (CI [−0.0045, −0.0002], p=0.031) instead of −0.0159; per endpoint 0.737 vs 0.738 (CYP1A2), 0.531 vs 0.535, 0.861 vs 0.865, 0.418 vs 0.418 (CYP3A4). The interval loss works by shifting mean and spread, and a fixed-moment placement overwrites that. Rank agreement with `22`'s file is 0.992 to 0.997. A submission that keeps the placement should expect roughly the placed number, not the raw one.
+
+### 31_interval_loss (2026-10-26) — built, validated, scored
+
+`submissions/31_interval_loss/20261026_gated/`, built by `notebooks/build_interval_loss_submission.py --gate` from `31_interval_final_fits.py` (`pubchem` ×5 seeds and pooled ×3 seeds refit with `interval-mae`; ~85 s per `pubchem` seed, ~58 min per pooled seed). `22`'s blend and weights, with those two members swapped. **CYP2D6 keeps `20`'s MAE pooled seeds** (interval was worse there). **CYP2C9 and CYP3A4 are left unplaced** (CYP1A2 and CYP2D6 still go onto `12`'s moments), because fixed-moment placement erases ~85% of the gain (`31b`). TDI is `24`'s file, unchanged. Rank agreement with `22`'s regression file 0.992 to 0.997. Passes `submission.check` on both tracks. An earlier fully-placed build sits in `20261026/` (expected CV gain ~0.002, not recommended); neither folder is deleted. CV expectation for the gated build is roughly −0.012 macro against `22`, derived from per-endpoint raw/placed rows, not measured as one blend.
+
+### Board record, 31 gated (live, 2026-10-26) — the gating paid, on the endpoints it was meant for
+
+Snapshot `data/leaderboard/20261026/`. Regression macro ST-RAE **0.5711 → 0.5573** (−0.0138) against the CV estimate of about −0.012. Per endpoint: CYP1A2 0.5720 → 0.5711, CYP2C9 0.4249 → 0.4093, CYP2D6 0.8033 → 0.7997, CYP3A4 0.4840 → 0.4489. The two unplaced endpoints gained most (CYP3A4 −0.035, CYP2C9 −0.016); the two still placed onto `12`'s moments barely moved (−0.001, −0.004), as `31b` predicted. Macro Spearman 0.724 → 0.731, R² 0.538 → 0.536, MAE 0.702 → 0.704.
+
+**Rank went 66/252 to 74/261 while the score improved**: the field grew by 9 and 22's 0.5711 would sit near rank 77 on today's board, so the build gained about 3 places. Compare scores across snapshots, ranks only within one. TDI is `24`'s file, unchanged, and was not compared.
+
 ## Placement (07) — separable from ordering, and where the leaderboard gap is
 
 A contender scored macro ST-RAE **0.4378** against our 0.78 ([blog](https://supercowpowers.github.io/workbench/blogs/cyp_challenge/), [code](https://github.com/SuperCowPowers/workbench/tree/main/ml_pipelines/OpenADMET/cyp)). Most of the gap is not a better model. `src/cyp/placement.py` implements the part reproducible without spending submissions we do not have.

@@ -100,3 +100,16 @@ def test_unc_error_spearman_is_positive_when_uncertainty_tracks_error() -> None:
     )
     report = uncertainty_calibration_report(oof)
     assert report.row(0, named=True)["unc_error_spearman"] > 0.1
+
+
+def test_paired_fold_bootstrap_detects_a_consistent_shift_and_not_noise():
+    """A uniform per-fold gain is significant; zero-mean noise is not."""
+    from cyp.evaluation import paired_fold_bootstrap
+
+    rng = np.random.default_rng(0)
+    base = rng.normal(0.7, 0.03, 25)
+    shifted = paired_fold_bootstrap(base - 0.02 + rng.normal(0, 0.003, 25), base)
+    assert shifted["diff"] < 0 and shifted["ci_high"] < 0 and shifted["p_value"] < 0.01
+    noise = paired_fold_bootstrap(base + rng.normal(0, 0.02, 25), base)
+    assert noise["ci_low"] < 0 < noise["ci_high"]
+    assert noise["n_folds"] == 25

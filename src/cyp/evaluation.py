@@ -263,6 +263,35 @@ def paired_bootstrap(
     }
 
 
+def paired_fold_bootstrap(
+    a: np.ndarray, b: np.ndarray, n_resamples: int = 10_000, seed: int = 42
+) -> dict[str, float]:
+    """Bootstrap the mean of the per-fold difference `a - b`, with the fold as the unit.
+
+    `paired_bootstrap` resamples compounds, but every compound appears once per outer
+    repeat, so its intervals are too narrow for a 5x5 design (notebook 15 found this
+    re-testing 03/05). Both arms were scored on identical folds, so the per-fold
+    difference is the repeated measure. Still anti-conservative, since folds from
+    different repeats overlap: read the interval as a lower bound on the uncertainty.
+
+    The p-value is twice the smaller tail of the resampled means, so with 10,000
+    resamples the smallest value reported is 0 (write it as p < 0.0001).
+    """
+    diff = np.asarray(a, dtype=float) - np.asarray(b, dtype=float)
+    if diff.ndim != 1 or len(diff) < 2:
+        raise ValueError("need two aligned 1-D per-fold vectors of length >= 2")
+    rng = np.random.default_rng(seed)
+    resampled = diff[rng.integers(0, len(diff), size=(n_resamples, len(diff)))].mean(axis=1)
+    p = 2.0 * min((resampled <= 0).mean(), (resampled >= 0).mean())
+    return {
+        "diff": float(diff.mean()),
+        "ci_low": float(np.percentile(resampled, 2.5)),
+        "ci_high": float(np.percentile(resampled, 97.5)),
+        "p_value": float(min(p, 1.0)),
+        "n_folds": len(diff),
+    }
+
+
 def holm_bonferroni(p_values: dict[str, float], alpha: float = 0.05) -> pl.DataFrame:
     """Holm-Bonferroni correction over a family of comparisons.
 
