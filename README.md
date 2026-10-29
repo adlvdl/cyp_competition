@@ -4,6 +4,76 @@ Code for the [OpenADMET CYP Inhibition Blind Challenge](https://huggingface.co/s
 
 CYP enzymes metabolize most marketed small-molecule drugs, so unexpected inhibition causes drug–drug interactions. Time-dependent (mechanism-based) inhibition is worse still: the interaction persists after the parent compound clears.
 
+## Final submission
+
+The repo is final until the test labels are released. The entry on the live board is two files, one per track, from two submissions that are both scored:
+
+| track | file | live score | rank |
+|:--|:--|--:|--:|
+| Direct inhibition | [31_interval_loss/20261026_gated/activity.csv](submissions/31_interval_loss/20261026_gated/) | macro ST-RAE **0.5573** | 74/261 |
+| TDI | [24_tdi_encoders/20261023/tdi.csv](submissions/24_tdi_encoders/20261023/) (copied unchanged into the 31 folder) | macro MCC **0.2768** | 79/137 |
+
+Live scores cover half the test set. Ranks are from the 2026-10-26 snapshot ([data/leaderboard/20261026/](data/leaderboard/20261026/)) and are only comparable within one snapshot. The entry uses no proprietary data and the code is open.
+
+| endpoint | ST-RAE | Spearman | | isoform | MCC |
+|:--|--:|--:|:--|:--|--:|
+| CYP1A2 | 0.5711 | 0.808 | | CYP3A4 | 0.3906 |
+| CYP2C9 | 0.4093 | 0.834 | | CYP2D6 | 0.1629 |
+| CYP2D6 | 0.7997 | 0.440 | | | |
+| CYP3A4 | 0.4489 | 0.842 | | | |
+
+### Regression model (submission 31, gated)
+
+A per-endpoint Caruana blend of four members. Every blind-set member is a seed mean, and every member is fitted on 100% of the labelled rows:
+
+| member | what it is | seeds | public data |
+|:--|:--|--:|:--|
+| `pubchem` | Chemprop D-MPNN, encoder pretrained on the PubChem NCGC qHTS CYP panel, then fine-tuned multitask on the four endpoints | 5 | PubChem qHTS (pretraining) |
+| `tabicl_monroe` | TabICL on frozen [Monroe](https://github.com/blazejba/monroe) 3D embeddings (PCA 128) | 5 | Monroe's own pretraining corpus |
+| `tabicl_atom_jepa` | TabICL on frozen Atom-JEPA embeddings | 5 | none by us (encoder weights are third-party) |
+| `pooled_workbench` | One from-scratch multitask Chemprop on challenge rows plus public rows, 17 heads | 3 | PubChem qHTS `max_response`, ChEMBL 37 |
+
+
+Weights are equal splits among the selected members, fitted on all 25 scaffold folds ([weights.csv](submissions/31_interval_loss/20261026_gated/weights.csv)):
+
+| endpoint | `pubchem` | `tabicl_monroe` | `tabicl_atom_jepa` | `pooled_workbench` |
+|:--|--:|--:|--:|--:|
+| CYP1A2 | 0.20 | 0.40 | 0.20 | 0.20 |
+| CYP2C9 | 0.33 | 0.33 | 0 | 0.33 |
+| CYP2D6 | 0.25 | 0.25 | 0.25 | 0.25 |
+| CYP3A4 | 0.33 | 0.33 | 0 | 0.33 |
+
+Two choices separate 31 from the earlier 22:
+
+1. **Interval loss.** `pubchem` and `pooled_workbench` are retrained with `interval-mae`, which is zero inside a compound's credible interval and linear outside it, the same shape as ST-RAE ([notebooks 28 to 31b](#ideas-from-other-entrants)). CYP2D6 keeps the L1-trained pooled seeds because the interval version was worse there in CV.
+2. **Gated placement.** CYP1A2 and CYP2D6 are affine-mapped onto the moments solved in notebooks 07 and 12. CYP2C9 and CYP3A4 are left at the blend's own mean and spread, because a fixed-moment placement erased about 85% of the interval gain in CV (31b) and had cost those two endpoints ST-RAE in 07.
+
+Progress on the live board (macro ST-RAE): 12 `0.6578` → 17 `0.6209` → 22 `0.5711` → 31 `0.5573`. The gain from 22 to 31 landed on the two unplaced endpoints (CYP3A4 −0.035, CYP2C9 −0.016), as CV predicted. The macro Spearman moved only 0.724 → 0.731: the gains since 22 are position relative to the credible intervals, not ordering.
+
+### TDI model (submission 24)
+
+A per-isoform Caruana blend of six arms (MCC at a fixed threshold of 0.25), each refit on 100% of the labelled rows and seed-averaged:
+
+| arm | encoder | seeds |
+|:--|:--|--:|
+| `tabicl_singletask` | frozen CheMeleon | 5 |
+| `tabicl_monroe` | frozen Monroe | 5 |
+| `tabicl_atom_jepa` | frozen Atom-JEPA | 5 |
+| `chemprop_pubchem` | PubChem-pretrained, fine-tuned | 3 |
+| `chemprop_pubchem_frozen` | PubChem-pretrained, encoder frozen | 3 |
+| `chemprop_scratch` | from scratch | 3 |
+
+CV macro MCC was 0.2945 against 0.2650 for the previous four-arm blend (notebook 23, Holm-significant). The live half scored **0.2768**, up from 0.2028 for the earlier blend, so unlike that one the CV gain held on the board. The A1 rule from notebook 27 (train TDI only on rows that have a direct-inhibition arm) improved CV by about +0.03 but **was not built into any submission**.
+
+### Expected against live
+
+| submission | CV expectation | live |
+|:--|--:|--:|
+| 31 regression (gated) | about 0.627 (22's 0.639 minus roughly 0.012) | 0.5573 |
+| 24 TDI | 0.2945 | 0.2768 |
+
+CV cannot see placement and the live half is small, so neither number forecasts the final test score.
+
 ## Quick start
 
 ```bash
@@ -13,7 +83,7 @@ make baseline                  # run notebooks/01_baseline.py end to end → a v
 make lab                       # marimo edit — open notebooks interactively (toggle "Quick mode" there)
 ```
 
-The datasets are committed under [data/raw/20260908/](data/raw/20260908/), so no download is needed to start. See [Data snapshots](#data-snapshots) for how re-downloads are tracked.
+The challenge datasets are committed under [data/raw/](data/raw/), so no download is needed to start. Public CYP data is under [data/external/](data/external/). See [Data snapshots](#data-snapshots) for how re-downloads are tracked.
 
 ## The two tracks
 
@@ -56,6 +126,26 @@ Filter per-endpoint with `data.labelled_subset(df, endpoint)`. Note the TDI clas
 
 The single-concentration screen covers far more compounds than any dose-response table and is the main source of auxiliary signal for compounds that never got a curve.
 
+### Public data (regression only)
+
+The challenge allows public data if it is disclosed. Three public CYP sources are downloaded into dated snapshots under [data/external/](data/external/), each by its own module. **No public label is ever written to a scored endpoint column.** Each source gets its own head on its own scale, and public structures matching any challenge compound (train or blind) are removed by InChIKey connectivity block, not SMILES (`external.inchikey_skeleton`).
+
+| source | module | snapshot | what it supplies | used in the final regression |
+|:--|:--|:--|:--|:--|
+| NCGC qHTS CYP panel, PubChem AIDs 410 (CYP1A2), 883 (CYP2C9), 884 (CYP3A4), 891 (CYP2D6). Veith et al. | `cyp.external` | `20260915`, `20260916` | ~12,900 compounds with pIC50 on one protocol, plus `max_response` (efficacy) at near-full coverage, which carries the inactive half of the library | `pubchem` pretraining; `max_response` heads in `pooled_workbench` |
+| ChEMBL 37, CYP1A2 / 2C9 / 2C19 / 2D6 / 3A4 | `cyp.chembl` | `20260916` | 41,403 compounds, ~14,900 new skeletons, no low-end range (only fitted curves carry a `pchembl_value`) | pIC50 heads in `pooled_workbench` |
+| Tox21 P450-Glo, CYP2C9 / 2D6 / 3A4 (no CYP1A2), filtered by the luciferase counter-screen | `cyp.tox21` | `20260916` | ~2,400 explicit inactives per isoform | in the union matrix only, **not in the final model** |
+
+The challenge's own unused arms also act as auxiliary targets (`aux_training.challenge_auxiliary_matrix`, `auxiliary.screen_targets`): the single-concentration screen log2fc, TDI-condition pIC50, and Emax. These need no download.
+
+`aux_training.full_union_matrix` assembles all sources into 24,718 compounds × 16 heads × 125,193 labels. Notebook 05 found that pretraining on the PubChem panel helps only with the encoder unfrozen. Notebook 20 found a from-scratch model trained on the pooled rows is worse alone and improves the blend (macro ST-RAE −0.021), because its errors are decorrelated from the other members.
+
+The TDI track uses **no public CYP data**. The PubChem-pretrained TDI arms reuse the same qHTS pretraining, binarised (`aux_training.binarise_pretraining_matrix`).
+
+### Pretrained encoders (third-party weights)
+
+Frozen embeddings from [Monroe](https://github.com/blazejba/monroe) and Atom-JEPA (the `encoders` extra, `cyp.encoders`), and CheMeleon (`graph_models.chemeleon_embed`). Monroe pretrains on PCBA, which contains the Veith panel the challenge derives from. 225 of 4,905 training compounds and 1 of 750 blind compounds carry a label there (`scripts/audit_monroe_pcba_overlap.py`). Dropping the 225 leaves the CV gains unchanged.
+
 ### Third-party data
 
 **xTB conformer ensembles and semi-empirical descriptors** for every challenge compound, published by Oleg Gromov (challenge user `Shorku`) in [Shorku/OpenADMET_Blind_Challenge_Predicting_CYP_Inhibition](https://github.com/Shorku/OpenADMET_Blind_Challenge_Predicting_CYP_Inhibition/tree/a98faaf41e0630046d0c6f11bd11b6cfe55687fc/data) under the MIT licence (Copyright (c) 2026 Oleg Gromov), pinned at commit `a98faaf`. Method: O. Gromov, *J. Chem. Theory Comput.* 2025, [doi:10.1021/acs.jctc.5c00425](https://doi.org/10.1021/acs.jctc.5c00425). 12,037 structures, 102,624 conformers. `python -m cyp.shorku_qm` fetches it to `data/external/shorku_qm/YYYYMMDD/` (`geoms.zip`, 134 MB, is gitignored and hash-checked on download). Used by `scripts/probe_xtb_monroe.py` and `notebooks/26_monroe_conformers.py`.
@@ -66,7 +156,10 @@ OpenADMET has amended the dataset mid-challenge, so downloads are kept as dated 
 
 ```
 data/raw/20260908/    cyp-challenge-*.csv + the dataset card
+data/raw/20261020/    re-download after the mid-challenge amendment; same row counts
 ```
+
+The final submissions were built on snapshot `20261020`. The baseline and early notebooks used `20260908`.
 
 Each `make data` run writes a new `data/raw/YYYYMMDD/` directory and then reports, file by file, what changed against the previous snapshot:
 
@@ -107,6 +200,9 @@ src/cyp/
   aux_training.py    auxiliary/public-data label matrices, pretraining CV, pooled multitask CV
   external.py, chembl.py, tox21.py   public-data downloaders (dated snapshots under data/external/)
   shorku_qm.py       third-party xTB conformer ensembles (data/external/shorku_qm/), see Data
+  interval_loss.py, interval_launcher.py   ST-RAE-shaped training loss injected into the Chemprop CLI
+  auxiliary.py       challenge-side auxiliary targets (screen log2fc, TDI-condition pIC50, Emax)
+  pharmacophore.py, pka.py, docking.py, plif.py, unimol.py   CYP2D6 structure experiments (notebooks 09 to 11), none shipped
   placement.py       affine placement of predictions and the blind-set moment solve
   multitask.py       stacked / native / multitarget multitask harnesses with shared folds
 notebooks/           marimo notebooks, one per modelling run (NN_name.py); build_*.py scripts assemble submissions
@@ -124,16 +220,21 @@ A notebook's outputs are named after the notebook itself: `notebooks/01_baseline
 
 ## Current status
 
-**Latest (2026-10-23).** After 21 notebooks, the best regression model (submission 22) is a per-endpoint Caruana blend of PubChem-pretrained Chemprop, TabICL on frozen Monroe and Atom-JEPA embeddings, and a from-scratch pooled multitask Chemprop trained on challenge plus public data. Each blind-set member is a seed mean. TDI is a Caruana blend of TabICL and three Chemprop variants. Full findings per notebook are in [CLAUDE.md](CLAUDE.md).
+**Latest (2026-10-29).** The repo is final pending the test-label release. The submitted entry is described in [Final submission](#final-submission). Full findings per notebook are in [CLAUDE.md](CLAUDE.md).
 
-| submission | regression macro ST-RAE | TDI macro MCC | status |
+| submission | regression macro ST-RAE (live) | TDI macro MCC (live) | status |
 |:--|--:|--:|:--|
-| [12_final_placement](submissions/12_final_placement/20260919/) | 0.6578 (live), 0.6384 (full set) | 0.2111 | scored |
-| [17_regression_ensemble](submissions/17_regression_ensemble/20261020/) | **0.6209** (live) | 0.2028 | scored, rank 85/257 on 2026-10-21 |
-| [22_pooled_seed_ensemble](submissions/22_pooled_seed_ensemble/20261023/) | **0.5711** (live) | 0.2028 (17's) | scored, rank 66/252 on 2026-10-23 |
-| [24_tdi_encoders](submissions/24_tdi_encoders/20261023/) | same as 22 | CV 0.2945 vs 0.2650 | built and validated, **not submitted** |
+| [12_final_placement](submissions/12_final_placement/20260919/) | 0.6578 (0.6384 on the full set at the interim reveal) | 0.2111 | scored |
+| [17_regression_ensemble](submissions/17_regression_ensemble/20261020/) | 0.6209 | 0.2028 | scored, regression rank 85/257, TDI rank 121 on 2026-10-21 |
+| [22_pooled_seed_ensemble](submissions/22_pooled_seed_ensemble/20261023/) | 0.5711 | 0.2028 (17's) | scored, rank 66/252 on 2026-10-23 |
+| [24_tdi_encoders](submissions/24_tdi_encoders/20261023/) | 0.5711 (22's) | **0.2768** | scored, TDI rank 77/134 on 2026-10-24 |
+| [31_interval_loss](submissions/31_interval_loss/20261026_gated/) (**final**) | **0.5573** | 0.2768 (24's) | scored, rank 74/261 on 2026-10-26 |
+
+An ungated build of 31 sits in `submissions/31_interval_loss/20261026/` (placement on all four endpoints, not recommended). It was not submitted.
 
 Scores are from the live leaderboard (half the test set), snapshots in [data/leaderboard/](data/leaderboard/). Ranks are only comparable within one snapshot because the field keeps growing. Cross-validation cannot see placement, so a CV number is not a forecast of the board.
+
+Not shipped, with CV evidence: the TDI A1 rule and gate feature (notebooks 27, 29), and the xTB conformer embeddings (notebook 26, no measurable gain).
 
 ### Baseline (notebook 01)
 
@@ -236,17 +337,18 @@ The live leaderboard scores only half the test set (split by chemical series); t
 
 ## Rules worth remembering
 
-- One submission per lab or cooperative group.
 - Teams using proprietary CYP data must disclose it.
 - An **Innovation in ML Award** is judged separately from leaderboard rank — novel architectures, creative data usage, and uncertainty quantification all count.
 - Open-sourcing your code earns community recognition.
 
 ## Ideas from other entrants
 
-On 2026-10-25 we read the public model reports linked from the live leaderboard (40 distinct links, 39 reachable) and took three ideas from them. Ideas only: none of their code, data or checkpoints is used here. We did not use the pretrained checkpoints in jeremy's repo because it carries no licence.
+Two ideas came from the SuperCowPowers workbench notes and were adopted well before the others. On 2026-10-25 we also read the public model reports linked from the live leaderboard (40 distinct links, 39 reachable) and took three more. Ideas only: none of their code, data or checkpoints is used here. We did not use the pretrained checkpoints in jeremy's repo because it carries no licence.
 
 | idea | taken from | tested in |
 |:--|:--|:--|
+| **Placement.** Separate a prediction vector's ordering from its position on the pIC50 axis. An affine transform sets mean and spread without changing any rank, and the calibration that maximises R² is not the one that minimises ST-RAE. Adopted 2026-09-16, the earliest idea here. The R² decomposition (`R2 = 2*rho*k - k^2 - b^2`), the `k = rho` optimum, the blind-moment solve and the per-endpoint gating are our own work. We did not reuse their solved constants. | SuperCowPowers (Workbench), [working notes](https://supercowpowers.github.io/workbench/blogs/cyp_challenge/), [code](https://github.com/SuperCowPowers/workbench/tree/main/ml_pipelines/OpenADMET/cyp). Described in [Phase 1 write-up](https://www.delavega.ai/posts/2026_10_20_cyp_phase1.html). | [07](notebooks/07_placement.py), [12](notebooks/12_final_placement.py), `src/cyp/placement.py`. Applied to CYP1A2 and CYP2D6 in the final regression; gated off for CYP2C9 and CYP3A4 |
+| **Pooled multitask model.** One from-scratch Chemprop trained on challenge rows plus public rows, with public sources as extra heads on extra rows and down-weighted (`union-p30`). | SuperCowPowers, same notes and code. We replicated the recipe, with public rows disjoint from every challenge compound. | [20](notebooks/20_pooled_workbench.py), [21](notebooks/21_pooled_ensemble.py): worse alone, macro ST-RAE −0.021 inside the blend. Ships as `pooled_workbench` |
 | Train TDI only on compounds that have a direct-inhibition arm. 1,249 of the 3,584 labelled CYP3A4 rows have none and are all negative, which dilutes the positive rate from 32.7% to 21.3% against a blind set where every compound has both arms. | JacksonBurns, [NOTES.md](https://github.com/JacksonBurns/cyp-challenge/blob/86213d34157eeeea7635b6943c3f8c3798548514/NOTES.md) (sec. 23). We verified the counts on our own snapshot. | [27](notebooks/27_tdi_prior_and_gate.py), [29](notebooks/29_tdi_blend_a1.py): +0.033 macro MCC on one readout, +0.030 inside the Caruana blend (CV only) |
 | Feed TDI models a leak-free predicted direct pIC50 as a gate feature. | Nomad-link-id (Igor Eduardo, Cortexa Social), [methods report](https://huggingface.co/Nomad-link-id/openadmet-cyp-methods) | [27](notebooks/27_tdi_prior_and_gate.py): +0.015, adds nothing on top of the rule above |
 | Train against the credible interval (zero loss inside `[conf_low, conf_high]`) instead of the point estimate, matching ST-RAE. | mokhalaf22, [REPORT.md](https://github.com/mokhalaf22/openadmet-cyp-public/blob/main/REPORT.md); doctawho42 (Lizard Wizard), [method report](https://github.com/doctawho42/CYPChallenge/blob/main/docs/method_report.md) | [28](notebooks/28_interval_loss.py), loss in `src/cyp/interval_launcher.py`: macro ST-RAE −0.023 on from-scratch multitask chemprop, Spearman unchanged. [30](notebooks/30_interval_loss_shipped.py) on the shipped models: `pubchem` −0.046 vs its MSE config and −0.027 vs L1 (25 folds, Holm-significant), pooled model −0.037 vs L1 (5 folds, CYP2D6 worse), Spearman unchanged in both |
